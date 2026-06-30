@@ -40,9 +40,14 @@ async def summarize(text: str, system: str = "用简洁中文总结要点，分�
     if not model_available or not client:
         return "⚠️ 当前尚未配置大模型 API Key，请联系管理员使用 `/set_gemini_key` 进行配置。"
     
+    # 优先从 settings 中读取，如果没设置则退化使用环境变量或默认值
+    model_name = settings.get_setting("GEMINI_MODEL")
+    if not model_name:
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        
     try:
         response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model_name,
             contents=text,
             config=types.GenerateContentConfig(
                 system_instruction=system

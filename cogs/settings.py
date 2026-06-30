@@ -46,6 +46,20 @@ class SettingsCog(commands.Cog):
                 await interaction.response.send_message("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
             else:
                 await interaction.followup.send("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
+    @app_commands.command(name="set_model", description="[管理员] 设置全局 AI 模型 (例如 gemini-3.5-flash)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_model(self, interaction: discord.Interaction, model_name: str):
+        await interaction.response.defer(ephemeral=True)
+        settings.set_setting("GEMINI_MODEL", model_name)
+        await interaction.followup.send(f"✅ 已将默认 AI 模型全局切换为：`{model_name}`\n后续所有回复将使用该模型！", ephemeral=True)
+
+    @set_model.error
+    async def set_model_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(SettingsCog(bot))
