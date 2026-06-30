@@ -1,0 +1,36 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+from core import settings, ai_client
+
+class SettingsCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="set_gemini_key", description="[管理员] 设置 Gemini API Key")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_gemini_key(self, interaction: discord.Interaction, api_key: str):
+        # 延迟响应以免超时
+        await interaction.response.defer(ephemeral=True)
+        
+        # 保存设置
+        settings.set_setting("GEMINI_API_KEY", api_key)
+        
+        # 热更新 AI 客户端
+        success = ai_client.reload_client()
+        
+        if success:
+            await interaction.followup.send("✅ Gemini API Key 设置成功并已生效！", ephemeral=True)
+        else:
+            await interaction.followup.send("⚠️ Key 已保存，但加载失败，请检查 Key 是否有效。", ephemeral=True)
+
+    @set_gemini_key.error
+    async def set_gemini_key_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
+
+async def setup(bot):
+    await bot.add_cog(SettingsCog(bot))
