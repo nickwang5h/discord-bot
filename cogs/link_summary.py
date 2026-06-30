@@ -1,6 +1,9 @@
 import re
+import asyncio
 import discord
 from discord.ext import commands
+import trafilatura
+from core import ai_client
 
 URL_RE = re.compile(r"https?://\S+")
 
@@ -15,9 +18,40 @@ class LinkSummary(commands.Cog):
             
         urls = URL_RE.findall(message.content)
         if urls:
-            # 找到链接后可以调用抓取逻辑
-            # 这里先打印以作占位
-            print(f"发现链接，准备总结: {urls[0]}")
+            url = urls[0]
+            # 给出响应提示
+            status_msg = await message.reply("👀 发现链接，正在抓取内容并总结...")
+            
+            try:
+                # 抓取网页 (在单独的线程中以防阻塞)
+                downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
+                if not downloaded:
+                    await status_msg.edit(content="❌ 无法抓取该网页的内容。")
+                    return
+                
+                text = await asyncio.to_thread(trafilatura.extract, downloaded)
+                if not text or len(text) < 50:
+                    await status_msg.edit(content="❌ 网页内容太少或提取失败，无法总结。")
+                    return
+                
+                # 调用 AI
+                system_prompt = "你是一个专业的内容分析助手。请为用户提供这篇网页正文的中文摘要，提取出核心观点和结论，分点列出，保持客观简洁。"
+                
+                # 如果文本太长，截断它，防止超出 token 限制
+                if len(text) > 20000:
+                    text = text[:20000]
+                    
+                summary = await ai_client.summarize(text, system=system_prompt)
+                
+                # 避免超长
+                if len(summary) > 1900:
+                    summary = summary[:1900] + "\n...(总结过长被截断)"
+                    
+                await status_msg.edit(content=f"📝 **网页总结**:\n\n{summary}")
+                
+            except Exception as e:
+                print(f"总结链接时出错: {e}")
+                await status_msg.edit(content="❌ 处理此链接时遇到错误。")
 
 async def setup(bot):
     await bot.add_cog(LinkSummary(bot))
