@@ -32,8 +32,8 @@ class NewsDigest(commands.Cog):
             print(f"找不到配置的频道 ID: {channel_id}")
             return
             
-        # 抓取 Google 资讯 (英文源：国际与加拿大新闻，相对客观)
-        rss_url = "https://news.google.com/rss/search?q=World+OR+Canada+when:24h&hl=en-CA&gl=CA&ceid=CA:en"
+        # 抓取 Google 资讯 (加拿大与国际的 Top Stories)
+        rss_url = "https://news.google.com/rss?hl=en-CA&gl=CA&ceid=CA:en"
         
         try:
             feed = await asyncio.to_thread(feedparser.parse, rss_url)
@@ -47,7 +47,7 @@ class NewsDigest(commands.Cog):
                 
             raw_text = "\n".join(news_items)
             
-            system_prompt = "你是一个专业的新闻编辑。用户会提供几条今天最新的国际重点事件和加拿大新闻标题。请你筛选其中最重要、最受关注的 3-5 条新闻，用通俗易懂的中文写成一篇简短的“早间新闻速递”。加上适当的 Emoji 并且排版清晰，以友好的口吻向大家问好。"
+            system_prompt = "你是一个专业的新闻编辑。用户会提供几条今天的头条新闻标题（包含国际大事和加拿大新闻）。请你挑选其中最重要的 3-5 条，用客观、简练的中文写成早报。\\n请严格使用结构化的简报格式，例如：\\n- **[新闻主题]**：用一两句话总结核心内容。\\n不要写长篇大论，直接输出结构化的新闻列表，可以带少量 Emoji。"
             
             digest = await ai_client.summarize(raw_text, system=system_prompt)
             
