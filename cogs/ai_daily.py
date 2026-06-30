@@ -4,6 +4,7 @@ try:
 except ImportError:
     from backports import zoneinfo
 from discord.ext import commands, tasks
+import discord
 import asyncio
 import feedparser
 from core import settings, ai_client
@@ -58,6 +59,13 @@ class AIDaily(commands.Cog):
     @ai_news_daily.before_loop
     async def before_ai_news_daily(self):
         await self.bot.wait_until_ready()
+
+    @discord.app_commands.command(name="test_ai_news", description="[管理员] 立即测试 AI 日报推送")
+    @discord.app_commands.checks.has_permissions(administrator=True)
+    async def test_ai_news(self, interaction: discord.Interaction):
+        await interaction.response.send_message("正在为您抓取并生成 AI 日报，请稍等...", ephemeral=True)
+        # 手动调用 ai_news_daily 的底层逻辑
+        await self.ai_news_daily.coro(self)
 
 async def setup(bot):
     await bot.add_cog(AIDaily(bot))
