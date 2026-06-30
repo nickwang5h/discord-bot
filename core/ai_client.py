@@ -43,7 +43,7 @@ async def summarize(text: str, system: str = "用简洁中文总结要点，分�
     # 优先从 settings 中读取，如果没设置则退化使用环境变量或默认值
     model_name = settings.get_setting("GEMINI_MODEL")
     if not model_name:
-        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
         
     try:
         response = await client.aio.models.generate_content(
