@@ -37,12 +37,21 @@ async def fetch_and_summarize(url: str) -> tuple[bool, discord.Embed | str]:
         is_youtube = True
         try:
             # 抓取 YouTube 字幕
-            transcript_list = await asyncio.to_thread(
-                YouTubeTranscriptApi.get_transcript, 
-                video_id, 
-                languages=['zh-Hans', 'zh-Hant', 'en', 'ja', 'ko']
-            )
-            text = " ".join([i['text'] for i in transcript_list])
+            if hasattr(YouTubeTranscriptApi, 'get_transcript'):
+                transcript_list = await asyncio.to_thread(
+                    YouTubeTranscriptApi.get_transcript, 
+                    video_id, 
+                    languages=['zh-Hans', 'zh-Hant', 'en', 'ja', 'ko']
+                )
+                text = " ".join([i['text'] for i in transcript_list])
+            else:
+                api = YouTubeTranscriptApi()
+                transcript_list = await asyncio.to_thread(
+                    api.fetch, 
+                    video_id, 
+                    languages=['zh-Hans', 'zh-Hant', 'en', 'ja', 'ko']
+                )
+                text = " ".join([i.text for i in transcript_list])
         except Exception as e:
             print(f"获取 YouTube 字幕失败: {e}")
             return False, "❌ 无法获取该 YouTube 视频的字幕。可能该视频未提供可选字幕。"
