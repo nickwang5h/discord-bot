@@ -8,6 +8,7 @@ import discord
 import asyncio
 import feedparser
 from core import settings, ai_client
+from core.utils import create_ai_embed
 
 TZ = zoneinfo.ZoneInfo("America/Toronto")
 
@@ -51,7 +52,13 @@ class NewsDigest(commands.Cog):
             
             digest = await ai_client.summarize(raw_text, system=system_prompt)
             
-            await channel.send(f"☀️ **大家早上好！这是今天的早间新闻速递** ☕\n\n{digest}")
+            embed = create_ai_embed(
+                title="☀️ 早上好！早间新闻速递 ☕",
+                description=digest,
+                color=discord.Color.gold()
+            )
+            
+            await channel.send(embed=embed)
             
         except Exception as e:
             print(f"执行新闻推送失败: {e}")

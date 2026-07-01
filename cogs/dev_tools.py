@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from core import ai_client
+from core.utils import create_ai_embed
 
 class DevTools(commands.Cog):
     def __init__(self, bot):
@@ -17,8 +18,12 @@ class DevTools(commands.Cog):
             "直接输出干货，不要在开头打招呼，也不要追问。"
         )
         answer = await ai_client.summarize(prompt, system=system)
-        if len(answer) > 1900: answer = answer[:1900] + "\n...(内容过长截断)"
-        await interaction.followup.send(f"📖 **概念解析：** `{concept}`\n\n{answer}")
+        embed = create_ai_embed(
+            title=f"📖 概念解析: {concept}",
+            description=answer,
+            color=discord.Color.purple()
+        )
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="vs", description="[Dev] 技术对比：一针见血对比两个技术栈")
     async def vs(self, interaction: discord.Interaction, tech_a: str, tech_b: str):
@@ -29,8 +34,12 @@ class DevTools(commands.Cog):
             "最后给出一个明确的“极客推荐结论”，帮助团队做技术选型。结构化输出，禁止废话和寒暄。"
         )
         answer = await ai_client.summarize(prompt, system=system)
-        if len(answer) > 1900: answer = answer[:1900] + "\n...(内容过长截断)"
-        await interaction.followup.send(f"⚔️ **技术选型：** `{tech_a}` 🆚 `{tech_b}`\n\n{answer}")
+        embed = create_ai_embed(
+            title=f"⚔️ 技术对比: {tech_a} vs {tech_b}",
+            description=answer,
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="regex", description="[Dev] 正则生成器：根据描述生成正则表达式并拆解解释")
     async def regex(self, interaction: discord.Interaction, description: str):
@@ -42,8 +51,12 @@ class DevTools(commands.Cog):
             "最后给出一两个匹配成功的例子和失败的例子。禁止任何废话。"
         )
         answer = await ai_client.summarize(prompt, system=system)
-        if len(answer) > 1900: answer = answer[:1900] + "\n...(内容过长截断)"
-        await interaction.followup.send(f"🪄 **正则生成：** `{description}`\n\n{answer}")
+        embed = create_ai_embed(
+            title=f"🪄 正则生成: {description}",
+            description=answer,
+            color=discord.Color.teal()
+        )
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="debug", description="[Dev] 报错翻译官：分析错误日志或代码")
     async def debug(self, interaction: discord.Interaction, code_or_error: str):
@@ -54,8 +67,12 @@ class DevTools(commands.Cog):
             "用清晰的步骤解释如何修复，如果可以，请直接提供修复后的代码片段。语气专业直接。"
         )
         answer = await ai_client.summarize(prompt, system=system)
-        if len(answer) > 1900: answer = answer[:1900] + "\n...(内容过长截断)"
-        await interaction.followup.send(f"🐛 **Debug 分析结果：**\n\n{answer}")
+        embed = create_ai_embed(
+            title="🐛 Debug 分析结果",
+            description=answer,
+            color=discord.Color.orange()
+        )
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(DevTools(bot))

@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from core import ai_client
+from core.utils import create_ai_embed
 
 class Lifestyle(commands.Cog):
     def __init__(self, bot):
@@ -13,10 +14,13 @@ class Lifestyle(commands.Cog):
         
         answer = await ai_client.summarize(ingredients, system=system_prompt)
         
-        if len(answer) > 1900:
-            answer = answer[:1900] + "\n...(菜谱过长被截断)"
-            
-        await interaction.followup.send(f"👨‍🍳 **为你量身定制的食谱** (食材: {ingredients})\n\n{answer}")
+        embed = create_ai_embed(
+            title=f"👨‍🍳 量身定制的食谱 (食材: {ingredients})",
+            description=answer,
+            color=discord.Color.yellow()
+        )
+        
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Lifestyle(bot))

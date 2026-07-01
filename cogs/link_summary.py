@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 import trafilatura
 from core import ai_client
+from core.utils import create_ai_embed
 
 URL_RE = re.compile(r"https?://\S+")
 
@@ -41,13 +42,15 @@ class LinkSummary(commands.Cog):
                 if len(text) > 20000:
                     text = text[:20000]
                     
-                summary = await ai_client.summarize(text, system=system_prompt)
+                answer = await ai_client.summarize(text, system=system_prompt)
                 
-                # 避免超长
-                if len(summary) > 1900:
-                    summary = summary[:1900] + "\n...(总结过长被截断)"
-                    
-                await status_msg.edit(content=f"📝 **网页总结**:\n\n{summary}")
+                embed = create_ai_embed(
+                    title="🔗 网页内容总结",
+                    description=answer,
+                    color=discord.Color.blue()
+                )
+                
+                await status_msg.edit(content=None, embed=embed)
                 
             except Exception as e:
                 print(f"总结链接时出错: {e}")
