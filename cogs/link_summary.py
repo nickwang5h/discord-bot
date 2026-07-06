@@ -112,6 +112,7 @@ class LinkSummary(commands.Cog):
                 await status_msg.edit(content=result)
 
     @app_commands.command(name="summary", description="一键总结网页长文或 YouTube 视频内容")
+    @app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
     async def summary(self, interaction: discord.Interaction, url: str):
         await interaction.response.send_message("👀 正在尝试获取内容并生成总结，请稍候...")
         

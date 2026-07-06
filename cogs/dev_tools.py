@@ -9,6 +9,7 @@ class DevTools(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="explain", description="[Dev] 极客词典：用大白话解释一个技术概念")
+    @app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
     async def explain(self, interaction: discord.Interaction, concept: str, context: str = ""):
         await interaction.response.defer()
         prompt = f"请向我解释这个技术概念：【{concept}】。补充上下文：{context}。"
@@ -26,6 +27,7 @@ class DevTools(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="vs", description="[Dev] 技术对比：一针见血对比两个技术栈")
+    @app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
     async def vs(self, interaction: discord.Interaction, tech_a: str, tech_b: str):
         await interaction.response.defer()
         prompt = f"对比这两个技术：{tech_a} vs {tech_b}。"
@@ -42,6 +44,7 @@ class DevTools(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="regex", description="[Dev] 正则生成器：根据描述生成正则表达式并拆解解释")
+    @app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
     async def regex(self, interaction: discord.Interaction, description: str):
         await interaction.response.defer()
         prompt = f"我需要一个正则表达式来实现：{description}。"
@@ -59,6 +62,7 @@ class DevTools(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="debug", description="[Dev] 报错翻译官：分析错误日志或代码")
+    @app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
     async def debug(self, interaction: discord.Interaction, code_or_error: str):
         await interaction.response.defer()
         prompt = f"请帮我排查这段代码或报错信息：\n{code_or_error}"

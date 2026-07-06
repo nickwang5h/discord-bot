@@ -8,6 +8,7 @@ class Ask(commands.Cog):
         self.bot = bot
 
     @discord.app_commands.command(name="ask", description="向 AI 提问任何问题")
+    @discord.app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
     async def ask(self, interaction: discord.Interaction, question: str):
         await interaction.response.defer()
         # 调用 AI 客户端获取回答

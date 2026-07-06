@@ -65,4 +65,7 @@ async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条�
         )
         return response.text
     except Exception as e:
+        error_msg = str(e)
+        if "429 RESOURCE_EXHAUSTED" in error_msg:
+            return "⚠️ **AI 服务调用已达上限 (Rate Limit)**。\n免费版 API 每天仅允许几十次请求。请联系管理员前往 Google AI Studio 绑定信用卡（Set up billing）以解锁高频调用限制。"
         return f"AI 生成失败: {e}"

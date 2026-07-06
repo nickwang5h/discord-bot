@@ -8,6 +8,7 @@ class Lifestyle(commands.Cog):
         self.bot = bot
 
     @discord.app_commands.command(name="recipe", description="输入食材，AI 给菜谱")
+    @discord.app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
     async def recipe(self, interaction: discord.Interaction, ingredients: str, search_online: bool = False):
         await interaction.response.defer()
         

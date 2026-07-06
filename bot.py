@@ -27,6 +27,18 @@ async def on_ready():
         
     print(f"上线啦：{bot.user}")
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    if isinstance(error, discord.app_commands.CommandOnCooldown):
+        await interaction.response.send_message(f"⏳ 技能冷却中，请在 {error.retry_after:.1f} 秒后再试。", ephemeral=True)
+    else:
+        print(f"Command Error: {error}")
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.send_message("❌ 发生错误，无法执行命令。", ephemeral=True)
+            except discord.errors.InteractionResponded:
+                pass
+
 @bot.tree.command(name="ping", description="测试 bot 是否存活")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("pong 🏓")
