@@ -33,36 +33,33 @@ class NewsDigest(commands.Cog):
             return
             
         try:
-            raw_text = "请为我生成今天的早间新闻简报。"
+            print("正在使用 RSS 抓取今日头条新闻...")
+            import feedparser
+            # 使用 RSS 抓取新闻
+            rss_url = "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+            feed = await asyncio.to_thread(feedparser.parse, rss_url)
+            
+            news_items = []
+            for entry in feed.entries[:25]:
+                news_items.append(f"- {entry.title} ({entry.link})")
+                
+            raw_text = "这是今天抓取的新闻标题列表：\n" + "\n".join(news_items) + "\n\n请严格基于这些新闻为我生成今天的早间新闻简报。"
             
             system_prompt = (
-                "你是一个专业的新闻主编。请使用 Google 搜索获取过去 24 小时的最新重大新闻。\n"
-                "必须严格按照以下四个板块进行分类：\n"
+                "你是一个专业的新闻主编。\n"
+                "必须严格按照以下四个板块进行分类（如果某板块没有新闻，可将其合并或略过）：\n"
                 "1. 🌍 国际要闻\n"
                 "2. 🍁 加拿大新闻\n"
                 "3. 💻 科技动态\n"
                 "4. 📈 金融市场\n"
                 "要求：\n"
-                "1. 每个板块必须精选 5 条最具价值的新闻（总计严格为 20 条）。\n"
+                "1. 每个板块精选最具价值的新闻。\n"
                 "2. 每条新闻必须极度简短（控制在20字以内的核心一句话总结）。\n"
                 "3. 每条新闻必须附带来源 URL，并使用 Markdown 语法：`- [新闻极简标题](URL)`。\n"
                 "注意：总字数必须严格控制以适应 Discord 消息长度限制。"
             )
             
-            digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=True, fallback_offline=False)
-            
-            if digest.startswith("⚠️"):
-                print("Gemini 联网限流，正在降级为 RSS 传统抓取模式...")
-                import feedparser
-                rss_url = "https://news.google.com/rss?hl=en-CA&gl=CA&ceid=CA:en"
-                feed = await asyncio.to_thread(feedparser.parse, rss_url)
-                
-                news_items = []
-                for entry in feed.entries[:25]:
-                    news_items.append(f"- {entry.title} ({entry.link})")
-                    
-                raw_text = "这是今天抓取的新闻标题列表：\n" + "\n".join(news_items) + "\n\n请严格基于这些新闻为我生成今天的早间新闻简报。"
-                digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
+            digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
             
             embed = create_ai_embed(
                 title="☀️ 早上好！早间新闻速递 ☕",
