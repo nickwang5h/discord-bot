@@ -19,9 +19,17 @@ class NewsDigest(commands.Cog):
     def cog_unload(self):
         self.daily.cancel()
 
-    @tasks.loop(time=datetime.time(hour=8, tzinfo=TZ))
+    @tasks.loop(time=[
+        datetime.time(hour=8, tzinfo=TZ),
+        datetime.time(hour=15, minute=30, tzinfo=TZ)
+    ])
     async def daily(self):
-        print("执行新闻抓取任务...")
+        now = datetime.datetime.now(tz=TZ)
+        is_morning = now.hour < 12
+        time_name = "早间" if is_morning else "午后"
+        greeting = "☀️ 早上好！早间新闻速递 ☕" if is_morning else "☕ 下午好！午后新闻速递 📰"
+        
+        print(f"执行{time_name}新闻抓取任务...")
         channel_id = settings.get_setting("NEWS_CHANNEL_ID")
         if not channel_id:
             print("未设置 NEWS_CHANNEL_ID，跳过新闻推送。")
@@ -43,7 +51,7 @@ class NewsDigest(commands.Cog):
             for entry in feed.entries[:25]:
                 news_items.append(f"- {entry.title} ({entry.link})")
                 
-            raw_text = "这是今天抓取的新闻标题列表：\n" + "\n".join(news_items) + "\n\n请严格基于这些新闻为我生成今天的早间新闻简报。"
+            raw_text = f"这是今天抓取的新闻标题列表：\n" + "\n".join(news_items) + f"\n\n请严格基于这些新闻为我生成今天的{time_name}新闻简报。"
             
             system_prompt = (
                 "你是一个专业的新闻主编。\n"
@@ -62,7 +70,7 @@ class NewsDigest(commands.Cog):
             digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
             
             embed = create_ai_embed(
-                title="☀️ 早上好！早间新闻速递 ☕",
+                title=greeting,
                 description=digest,
                 color=discord.Color.gold()
             )
@@ -76,10 +84,10 @@ class NewsDigest(commands.Cog):
     async def before_daily(self):
         await self.bot.wait_until_ready()
 
-    @discord.app_commands.command(name="test_news", description="[管理员] 立即测试早间新闻推送")
+    @discord.app_commands.command(name="test_news", description="[管理员] 立即测试新闻推送")
     @discord.app_commands.checks.has_permissions(administrator=True)
     async def test_news(self, interaction: discord.Interaction):
-        await interaction.response.send_message("正在为您抓取并生成早间新闻，请稍等...", ephemeral=True)
+        await interaction.response.send_message("正在为您抓取并生成新闻简报，请稍等...", ephemeral=True)
         # 手动调用 daily 的底层逻辑
         await self.daily.coro(self)
 
