@@ -57,15 +57,18 @@
 功能被分散到多个独立的 Cog 中，主要包含以下三种交互模式：
 
 1. **斜杠命令 (App Commands)**
-   - 例: `cogs/ask.py` 中的 `/ask` 命令。响应用户主动触发的请求，经由 `ask_ai` (开启 `use_search=True`) 获取实时搜索结果。
-   - 例: `cogs/lifestyle.py` 中的 `/recipe`，支持 `search_online` 参数动态决定是否联网搜索食谱。
-2. **事件监听器 (Event Listeners)**
-   - 例: `cogs/link_summary.py` 中的 `on_message`。监听聊天频道的每条消息，一旦通过正则表达式 `URL_RE` 匹配到网页或 YouTube 链接，将触发后台抓取并调用 AI 总结。
-   - 数据抓取依赖 `trafilatura` (提取网页正文) 和 `youtube_transcript_api` (提取 YouTube 字幕)。
-3. **定时任务 (Scheduled Tasks)**
-   - 例: `cogs/ai_daily.py` 和 `cogs/news_digest.py`。利用异步定时机制，在每天固定时间发送频道简报。
-     - `ai_daily.py`：通过 `aiohttp` 异步并发拉取 Hacker News 官方 API 的热门文章，交由 AI 筛选开发者关心的动态。
-     - `news_digest.py`：利用 Google Search Grounding (`use_search=True`) 直接让 AI 全网搜索整理国际、加拿大、科技、金融四大板块的 20 条热点早报。
+   - 例: `cogs/ask.py` 中的 `/ask` 命令。响应用户主动触发的请求，经由 `ask_ai` 获取解答（默认关闭在线搜索以节省配额）。
+   - 例: `cogs/lifestyle.py` 中的 `/recipe`，支持 `search_online` 参数动态决定是否联网搜索食谱（默认关闭）。
+
+2. **开发工具与信息处理型**：
+   这类功能通常需要处理特定的数据或文本结构，并不需要泛泛的聊天能力。
+   - `dev_tools.py`：包含解释代码 (`/explain`)、生成正则表达式 (`/regex`)、工具对比 (`/vs`) 等程序员实用工具。
+   - `link_summary.py`：利用 `trafilatura` 和 `lxml_html_clean` 解析任意网址正文，调用大模型进行网页总结。
+
+3. **定时与自动化广播型**：
+   使用 `discord.ext.tasks` 进行后台循环。
+   - `ai_daily.py`：每日固定时间从 Hacker News 爬取 Top 30 热门帖子，交由大模型过滤筛选并生成每日的“AI 前沿快报”。
+   - `news_digest.py`：利用 RSS 爬虫技术 (`feedparser`) 从 Google News 抓取最新的真实头条新闻，交由离线大模型严格按照板块进行总结，保证了极高的稳定性和真实性。
 
 ## 5. 数据流向与工作流程 (Data Flow)
 
@@ -89,3 +92,17 @@
 - **网页解析**: `trafilatura`
 - **视频解析**: `youtube-transcript-api`
 - **环境变量**: `python-dotenv`
+
+## 7. 架构决策与历史尝试 (Architectural Decisions & Experiments)
+
+为了确保机器人的高可用性与低成本，在开发过程中我们进行过以下技术路线的尝试与回滚：
+
+1. **Google Search Grounding (联网搜索功能)**
+   - **尝试**：最初在 `/news`（早间新闻）与 `/ask` 等核心命令中默认开启了 `use_search=True`。期望利用 Gemini 原生的 Google Search 工具直接获取实时数据并总结分类。
+   - **回滚原因**：Google Gemini Free 额度（15 RPM / 1500 RPD）对 Search 调用的限制极为严苛，极易触发 `429 RESOURCE_EXHAUSTED` 甚至 `503` 宕机。此外，在配合强限制的提示词（如“必须分为4个板块，每板块5条”）时，Search 模式经常由于找不到完美匹配而发生**安全拦截幻觉**，直接返回空字符串（表现为 Discord 卡片内容为空）。
+   - **最终决策**：将所有常规命令的搜索默认关闭。新闻模块 (`news_digest.py`) 则完全弃用 Search，转为使用传统的 RSS 爬虫 (`feedparser`) 获取 Google News 头条，再交由离线模型纯文本总结。稳定性提升至 100%。
+
+2. **xAI SDK (Grok) 降级方案**
+   - **尝试**：为了应对 Gemini 的 `429` 限流，最初计划接入 Elon Musk 的 Grok 模型作为二级回退网关。编写了集成代码并安装了 `xai-sdk`。
+   - **回滚原因**：经过文档与 API 调研，确认 Grok 没有真正意义上的“免费测试额度”，必须绑定信用卡预充值 (Pre-paid Billing) 才能使用。这与本项目“零成本/纯免费白嫖”的运维理念不符。
+   - **最终决策**：卸载 `xai-sdk`。引入 **OpenRouter** 平台（采用原生 `aiohttp`，0 额外依赖），使用其提供的海量免费节点（如 `google/gemini-2.5-flash-exp:free`）完美实现了免费兜底。
