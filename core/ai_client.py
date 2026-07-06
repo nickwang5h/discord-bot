@@ -3,7 +3,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 from core import settings
 
@@ -42,7 +42,7 @@ async def _ask_openrouter(text: str, sys_prompt: str):
     if not api_key:
         raise Exception("未配置 OPENROUTER_API_KEY")
         
-    model_name = settings.get_setting("OPENROUTER_MODEL") or os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash-exp:free")
+    model_name = settings.get_setting("OPENROUTER_MODEL") or os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
     
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -104,28 +104,23 @@ async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条�
         return await _try_gemini(with_search=use_search)
     except Exception as e:
         error_msg = str(e)
+        print(f"[Fallback Triggered] Gemini API 抛出异常: {error_msg}")
         
-        # 定义需要触发降级的严重服务器错误
-        fallback_errors = ["429", "RESOURCE_EXHAUSTED", "Rate Limit", "503", "UNAVAILABLE", "500", "INTERNAL_SERVER_ERROR"]
-        
-        if any(err in error_msg for err in fallback_errors):
-            # 搜索模式触发了限流或宕机，进入降级策略
-            if use_search:
-                if not fallback_offline:
-                    return "⚠️ **联网功能暂不可用**：由于 Gemini API 额度耗尽或服务器宕机，无法执行在线搜索，且当前设置禁止离线降级。"
-                # Tier 2: Gemini without Search (Offline)
-                try:
-                    return await _try_gemini(with_search=False)
-                except Exception as offline_e:
-                    offline_err_msg = str(offline_e)
-                    if not any(err in offline_err_msg for err in fallback_errors):
-                        return f"AI 离线生成失败: {offline_e}"
+        # 如果是搜索模式且允许离线降级，先尝试 Gemini 离线版
+        if use_search:
+            if not fallback_offline:
+                return f"⚠️ **联网功能暂不可用**：Gemini API 出现异常，且当前设置禁止离线降级。底层报错: {error_msg}"
             
-            # Tier 3: OpenRouter
+            # Tier 2: Gemini without Search (Offline)
             try:
-                openrouter_resp = await _ask_openrouter(text, system)
-                return openrouter_resp
-            except Exception as or_err:
-                return "⚠️ **AI 服务全线告急**。\n主干 Gemini 服务器不可用，且后备 OpenRouter 节点唤醒失败。请联系管理员检查后台日志。"
+                return await _try_gemini(with_search=False)
+            except Exception as offline_e:
+                print(f"[Fallback Triggered] Gemini 离线调用也失败: {offline_e}")
+                # 继续往下走到 Tier 3
         
-        return f"AI 生成失败: {e}"
+        # Tier 3: OpenRouter 终极兜底
+        try:
+            openrouter_resp = await _ask_openrouter(text, system)
+            return openrouter_resp
+        except Exception as or_err:
+            return f"⚠️ **AI 服务全线告急**。\n主干 Gemini 出现异常，且后备 OpenRouter 节点唤醒失败。\nGemini 错误: {error_msg}\nOpenRouter 错误: {or_err}"
