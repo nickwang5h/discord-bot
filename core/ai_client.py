@@ -42,7 +42,21 @@ async def _ask_openrouter(text: str, sys_prompt: str):
     if not api_key:
         raise Exception("未配置 OPENROUTER_API_KEY")
         
-    model_name = settings.get_setting("OPENROUTER_MODEL") or os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+    # 定义备选模型瀑布流 (用户自定义的排在第一位，后面跟着系统推荐的顶级免费节点)
+    user_model = settings.get_setting("OPENROUTER_MODEL") or os.getenv("OPENROUTER_MODEL")
+    fallback_models = [
+        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "nousresearch/hermes-3-llama-3.1-405b:free",
+        "meta-llama/llama-3.3-70b-instruct:free"
+    ]
+    
+    models_to_try = []
+    if user_model:
+        models_to_try.append(user_model)
+    for m in fallback_models:
+        if m not in models_to_try:
+            models_to_try.append(m)
     
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -54,23 +68,34 @@ async def _ask_openrouter(text: str, sys_prompt: str):
         messages.append({"role": "system", "content": sys_prompt})
     messages.append({"role": "user", "content": text})
     
-    payload = {
-        "model": model_name,
-        "messages": messages
-    }
+    last_error = ""
     
     async with aiohttp.ClientSession() as session:
-        async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                raise Exception(f"OpenRouter API Error {resp.status}: {error_text}")
-            
-            data = await resp.json()
+        for model_name in models_to_try:
+            payload = {
+                "model": model_name,
+                "messages": messages
+            }
             try:
-                content = data["choices"][0]["message"]["content"]
-                return f"{content}\n\n> 💡 *(由于主网络限流，本条回复已自动切换至 OpenRouter 免费节点生成)*\n\n<!--MODEL:OpenRouter ({model_name})-->"
-            except (KeyError, IndexError):
-                raise Exception(f"解析 OpenRouter 返回格式失败: {data}")
+                async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        try:
+                            content = data["choices"][0]["message"]["content"]
+                            return f"{content}\n\n> 💡 *(本条回复由 OpenRouter 免费兜底节点 `{model_name}` 生成)*\n\n<!--MODEL:OpenRouter ({model_name})-->"
+                        except (KeyError, IndexError):
+                            raise Exception(f"解析返回格式失败: {data}")
+                    else:
+                        error_text = await resp.text()
+                        last_error = f"HTTP {resp.status}: {error_text}"
+                        print(f"[OpenRouter Fallback] 节点 {model_name} 失败: {last_error}")
+                        continue # 尝试下一个节点
+            except Exception as e:
+                last_error = str(e)
+                print(f"[OpenRouter Fallback] 请求 {model_name} 抛出异常: {last_error}")
+                continue
+                
+    raise Exception(f"所有 OpenRouter 备选节点均已耗尽。最后一次错误: {last_error}")
 
 async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条列出。", use_search: bool = False, fallback_offline: bool = True):
     if not model_available or not client:
