@@ -49,7 +49,20 @@ class NewsDigest(commands.Cog):
                 "注意：总字数必须严格控制以适应 Discord 消息长度限制。"
             )
             
-            digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=True)
+            digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=True, fallback_offline=False)
+            
+            if digest.startswith("⚠️"):
+                print("Gemini 联网限流，正在降级为 RSS 传统抓取模式...")
+                import feedparser
+                rss_url = "https://news.google.com/rss?hl=en-CA&gl=CA&ceid=CA:en"
+                feed = await asyncio.to_thread(feedparser.parse, rss_url)
+                
+                news_items = []
+                for entry in feed.entries[:25]:
+                    news_items.append(f"- {entry.title} ({entry.link})")
+                    
+                raw_text = "这是今天抓取的新闻标题列表：\n" + "\n".join(news_items) + "\n\n请严格基于这些新闻为我生成今天的早间新闻简报。"
+                digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
             
             embed = create_ai_embed(
                 title="☀️ 早上好！早间新闻速递 ☕",
