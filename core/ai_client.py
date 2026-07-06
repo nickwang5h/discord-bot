@@ -36,6 +36,42 @@ def reload_client() -> bool:
 # 启动时初始化
 reload_client()
 
+async def _ask_openrouter(text: str, sys_prompt: str):
+    import aiohttp
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise Exception("未配置 OPENROUTER_API_KEY")
+        
+    model_name = settings.get_setting("OPENROUTER_MODEL") or os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash-exp:free")
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    messages = []
+    if sys_prompt:
+        messages.append({"role": "system", "content": sys_prompt})
+    messages.append({"role": "user", "content": text})
+    
+    payload = {
+        "model": model_name,
+        "messages": messages
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as resp:
+            if resp.status != 200:
+                error_text = await resp.text()
+                raise Exception(f"OpenRouter API Error {resp.status}: {error_text}")
+            
+            data = await resp.json()
+            try:
+                content = data["choices"][0]["message"]["content"]
+                return f"{content}\n\n> 💡 *(由于主网络限流，本条回复已自动切换至 OpenRouter 免费节点生成)*\n\n<!--MODEL:OpenRouter ({model_name})-->"
+            except (KeyError, IndexError):
+                raise Exception(f"解析 OpenRouter 返回格式失败: {data}")
+
 async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条列出。", use_search: bool = False):
     if not model_available or not client:
         return "⚠️ 当前尚未配置大模型 API Key，请联系管理员使用 `/set_gemini_key` 进行配置。"
@@ -63,9 +99,13 @@ async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条�
             contents=text,
             config=config
         )
-        return response.text
+        return f"{response.text}\n\n<!--MODEL:Gemini ({model_name})-->"
     except Exception as e:
         error_msg = str(e)
-        if "429 RESOURCE_EXHAUSTED" in error_msg:
-            return "⚠️ **AI 服务调用已达上限 (Rate Limit)**。\n免费版 API 每天仅允许几十次请求。请联系管理员前往 Google AI Studio 绑定信用卡（Set up billing）以解锁高频调用限制。"
+        if "429 RESOURCE_EXHAUSTED" in error_msg or "Rate Limit" in error_msg:
+            try:
+                openrouter_resp = await _ask_openrouter(text, system)
+                return openrouter_resp
+            except Exception as or_err:
+                return "⚠️ **AI 服务全线告急**。\nGemini 额度耗尽，且后备 OpenRouter 节点唤醒失败（可能未配置正确的 OPENROUTER_API_KEY）。请联系管理员检查后台日志。"
         return f"AI 生成失败: {e}"
