@@ -69,7 +69,7 @@ class AIDaily(commands.Cog):
                 "2. 请严格使用 Markdown 的链接语法，例如：`- [中文翻译标题](URL): 一句话简介`。"
             )
             
-            digest = await ai_client.summarize(raw_text, system=system_prompt)
+            digest = await ai_client.ask_ai(raw_text, system=system_prompt)
             
             embed = create_ai_embed(
                 title="🤖 AI 前沿工具快报 (每日更新) 🚀",

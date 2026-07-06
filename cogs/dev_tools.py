@@ -17,7 +17,7 @@ class DevTools(commands.Cog):
             "如果可能，提供一段极简的伪代码或示例代码帮助理解。"
             "直接输出干货，不要在开头打招呼，也不要追问。"
         )
-        answer = await ai_client.summarize(prompt, system=system)
+        answer = await ai_client.ask_ai(prompt, system=system)
         embed = create_ai_embed(
             title=f"📖 概念解析: {concept}",
             description=answer,
@@ -33,7 +33,7 @@ class DevTools(commands.Cog):
             "你是一个客观的高级架构师。请直接列出这两个技术的核心差异、优缺点、最适合的业务场景。"
             "最后给出一个明确的“极客推荐结论”，帮助团队做技术选型。结构化输出，禁止废话和寒暄。"
         )
-        answer = await ai_client.summarize(prompt, system=system)
+        answer = await ai_client.ask_ai(prompt, system=system)
         embed = create_ai_embed(
             title=f"⚔️ 技术对比: {tech_a} vs {tech_b}",
             description=answer,
@@ -50,7 +50,7 @@ class DevTools(commands.Cog):
             "然后，像切菜一样，逐字逐句拆解这个表达式，向开发者解释每个符号的含义。"
             "最后给出一两个匹配成功的例子和失败的例子。禁止任何废话。"
         )
-        answer = await ai_client.summarize(prompt, system=system)
+        answer = await ai_client.ask_ai(prompt, system=system)
         embed = create_ai_embed(
             title=f"🪄 正则生成: {description}",
             description=answer,
@@ -66,7 +66,7 @@ class DevTools(commands.Cog):
             "你是一个排错专家（Debug Master）。分析用户提供的代码或错误日志，指出根本原因。"
             "用清晰的步骤解释如何修复，如果可以，请直接提供修复后的代码片段。语气专业直接。"
         )
-        answer = await ai_client.summarize(prompt, system=system)
+        answer = await ai_client.ask_ai(prompt, system=system)
         embed = create_ai_embed(
             title="🐛 Debug 分析结果",
             description=answer,

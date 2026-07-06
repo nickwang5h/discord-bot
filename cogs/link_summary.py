@@ -79,7 +79,7 @@ async def fetch_and_summarize(url: str) -> tuple[bool, discord.Embed | str]:
     system_prompt = f"你是一个专业的内容分析助手。请为用户提供这篇{prompt_type}的中文摘要，提取出核心观点和结论，分点列出，保持客观简洁。"
     
     try:
-        answer = await ai_client.summarize(text, system=system_prompt)
+        answer = await ai_client.ask_ai(text, system=system_prompt)
         embed = create_ai_embed(
             title=f"🔗 {prompt_type}内容总结",
             description=answer,

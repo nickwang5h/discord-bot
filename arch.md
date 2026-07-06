@@ -42,7 +42,7 @@
 ### 3.2 AI 客户端层 (`core/ai_client.py`)
 采用单例模式封装 Google `genai` SDK，提供简单易用的异步接口：
 - `reload_client()`: 支持动态加载和重新初始化 API 凭证，优先读取本地设置(`settings.json`)，回退到系统环境变量。
-- `summarize(text, system)`: 核心请求方法，用于向 Gemini 发送提示词并获取结构化响应。处理了异常捕获与鉴权降级逻辑。
+- `ask_ai(text, system, use_search)`: 核心请求方法，用于向 Gemini 发送提示词并获取结构化响应。支持通过 `use_search=True` 动态挂载 Google Search 工具以获取实时联网数据。
 
 ### 3.3 数据持久层 (`core/settings.py`)
 提供轻量级的本地存储方案：
@@ -57,13 +57,15 @@
 功能被分散到多个独立的 Cog 中，主要包含以下三种交互模式：
 
 1. **斜杠命令 (App Commands)**
-   - 例: `cogs/ask.py` 中的 `/ask` 命令。响应用户主动触发的请求，经由 `ai_client.py` 转发至 Gemini。
+   - 例: `cogs/ask.py` 中的 `/ask` 命令。响应用户主动触发的请求，经由 `ask_ai` (开启 `use_search=True`) 获取实时搜索结果。
+   - 例: `cogs/lifestyle.py` 中的 `/recipe`，支持 `search_online` 参数动态决定是否联网搜索食谱。
 2. **事件监听器 (Event Listeners)**
    - 例: `cogs/link_summary.py` 中的 `on_message`。监听聊天频道的每条消息，一旦通过正则表达式 `URL_RE` 匹配到网页或 YouTube 链接，将触发后台抓取并调用 AI 总结。
    - 数据抓取依赖 `trafilatura` (提取网页正文) 和 `youtube_transcript_api` (提取 YouTube 字幕)。
 3. **定时任务 (Scheduled Tasks)**
-   - 例: `cogs/ai_daily.py` 和 `cogs/news_digest.py`。利用异步定时机制，在每天固定时间自动拉取信息、AI 总结并发送到指定频道。
+   - 例: `cogs/ai_daily.py` 和 `cogs/news_digest.py`。利用异步定时机制，在每天固定时间发送频道简报。
      - `ai_daily.py`：通过 `aiohttp` 异步并发拉取 Hacker News 官方 API 的热门文章，交由 AI 筛选开发者关心的动态。
+     - `news_digest.py`：利用 Google Search Grounding (`use_search=True`) 直接让 AI 全网搜索整理国际、加拿大、科技、金融四大板块的 20 条热点早报。
 
 ## 5. 数据流向与工作流程 (Data Flow)
 

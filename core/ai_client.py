@@ -36,7 +36,7 @@ def reload_client() -> bool:
 # 启动时初始化
 reload_client()
 
-async def summarize(text: str, system: str = "用简洁中文总结要点，分条列出。"):
+async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条列出。", use_search: bool = False):
     if not model_available or not client:
         return "⚠️ 当前尚未配置大模型 API Key，请联系管理员使用 `/set_gemini_key` 进行配置。"
     
@@ -45,13 +45,23 @@ async def summarize(text: str, system: str = "用简洁中文总结要点，分�
     if not model_name:
         model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
         
+    tools = []
+    if use_search:
+        tools.append(types.Tool(google_search=types.GoogleSearch()))
+        
+    config_kwargs = {}
+    if system:
+        config_kwargs["system_instruction"] = system
+    if tools:
+        config_kwargs["tools"] = tools
+        
+    config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        
     try:
         response = await client.aio.models.generate_content(
             model=model_name,
             contents=text,
-            config=types.GenerateContentConfig(
-                system_instruction=system
-            )
+            config=config
         )
         return response.text
     except Exception as e:

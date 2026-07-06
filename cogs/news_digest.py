@@ -6,7 +6,6 @@ except ImportError:
 from discord.ext import commands, tasks
 import discord
 import asyncio
-import feedparser
 from core import settings, ai_client
 from core.utils import create_ai_embed
 
@@ -33,24 +32,24 @@ class NewsDigest(commands.Cog):
             print(f"找不到配置的频道 ID: {channel_id}")
             return
             
-        # 抓取 Google 资讯 (加拿大与国际的 Top Stories)
-        rss_url = "https://news.google.com/rss?hl=en-CA&gl=CA&ceid=CA:en"
-        
         try:
-            feed = await asyncio.to_thread(feedparser.parse, rss_url)
-            if not feed.entries:
-                return
-                
-            # 提取前 8 条新闻的标题
-            news_items = []
-            for entry in feed.entries[:8]:
-                news_items.append(f"- {entry.title}")
-                
-            raw_text = "\n".join(news_items)
+            raw_text = "请为我生成今天的早间新闻简报。"
             
-            system_prompt = "你是一个专业的新闻编辑。用户会提供几条今天的头条新闻标题（包含国际大事和加拿大新闻）。请你挑选其中最重要的 3-5 条，用客观、简练的中文写成早报。\\n请严格使用结构化的简报格式，例如：\\n- **[新闻主题]**：用一两句话总结核心内容。\\n不要写长篇大论，直接输出结构化的新闻列表，可以带少量 Emoji。"
+            system_prompt = (
+                "你是一个专业的新闻主编。请使用 Google 搜索获取过去 24 小时的最新重大新闻。\n"
+                "必须严格按照以下四个板块进行分类：\n"
+                "1. 🌍 国际要闻\n"
+                "2. 🍁 加拿大新闻\n"
+                "3. 💻 科技动态\n"
+                "4. 📈 金融市场\n"
+                "要求：\n"
+                "1. 每个板块必须精选 5 条最具价值的新闻（总计严格为 20 条）。\n"
+                "2. 每条新闻必须极度简短（控制在20字以内的核心一句话总结）。\n"
+                "3. 每条新闻必须附带来源 URL，并使用 Markdown 语法：`- [新闻极简标题](URL)`。\n"
+                "注意：总字数必须严格控制以适应 Discord 消息长度限制。"
+            )
             
-            digest = await ai_client.summarize(raw_text, system=system_prompt)
+            digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=True)
             
             embed = create_ai_embed(
                 title="☀️ 早上好！早间新闻速递 ☕",
