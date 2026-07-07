@@ -44,25 +44,27 @@ class NewsDigest(commands.Cog):
             print("正在从高质量新闻源抓取新闻...")
             import feedparser
             
-            # 高质量中立源 (去除科技类，因为已经在 ai_daily.py 处理)
-            feeds = {
-                "World": "https://feeds.bbci.co.uk/news/world/rss.xml",
-                "Canada": "https://globalnews.ca/canada/feed/",
-                "Finance": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
-            }
+            # 高质量中立源 (支持同类别多源比对)
+            feeds = [
+                ("World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+                ("Canada", "https://globalnews.ca/canada/feed/"),
+                ("Finance", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"), # WSJ
+                ("Finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=120000000&id=100003114"), # CNBC
+                ("Finance", "https://finance.yahoo.com/news/rss") # Yahoo Finance
+            ]
             
             news_items = []
             
             async def fetch_feed(category, url):
                 try:
                     feed = await asyncio.to_thread(feedparser.parse, url)
-                    # 每个源取前 10 条，保证 AI 有充足的高质量信息进行总结
-                    return [f"[{category}] - {entry.title} ({entry.link})" for entry in feed.entries[:10]]
+                    # 每个源取前 12 条，保证多源比对有充足的数据
+                    return [f"[{category}] - {entry.title} ({entry.link})" for entry in feed.entries[:12]]
                 except Exception as e:
                     print(f"抓取 {category} 失败: {e}")
                     return []
 
-            tasks_list = [fetch_feed(cat, url) for cat, url in feeds.items()]
+            tasks_list = [fetch_feed(cat, url) for cat, url in feeds]
             results = await asyncio.gather(*tasks_list)
             
             for items in results:
@@ -77,10 +79,10 @@ class NewsDigest(commands.Cog):
                 "2. 🍁 加拿大新闻\n"
                 "3. 📈 金融市场\n"
                 "要求：\n"
-                "1. 每个板块精选最具价值的新闻。\n"
-                "2. 每条新闻必须极度简短（控制在20字以内的核心一句话总结）。\n"
-                "3. 每条新闻必须附带来源 URL，并使用 Markdown 语法：`- [新闻极简标题](URL)`。\n"
-                "注意：总字数必须严格控制以适应 Discord 消息长度限制。"
+                "1. 每个板块精选出 5 到 7 条最具价值的头条新闻。对于【金融市场】板块，列表中包含了多家不同媒体的交叉报道，请你综合比对去重，提取出最有共识的市场大事件（例如多家媒体同时报道的暴跌或收购）。\n"
+                "2. 每条新闻必须附带来源 URL，并严格使用 Markdown 语法：`- [新闻极简标题](URL): 一句话新闻摘要`。\n"
+                "3. 冒号后面的「一句话新闻摘要」要求信息量大、有深度，说明这起事件的影响或核心看点（类似 Hacker News 的硬核摘要风格），不要只重复标题。\n"
+                "注意：总字数必须控制以适应 Discord 消息长度限制。"
             )
             
             digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
