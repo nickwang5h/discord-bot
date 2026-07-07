@@ -41,25 +41,41 @@ class NewsDigest(commands.Cog):
             return
             
         try:
-            print("正在使用 RSS 抓取今日头条新闻...")
+            print("正在从高质量新闻源抓取新闻...")
             import feedparser
-            # 使用 RSS 抓取新闻
-            rss_url = "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-            feed = await asyncio.to_thread(feedparser.parse, rss_url)
+            
+            # 高质量中立源 (去除科技类，因为已经在 ai_daily.py 处理)
+            feeds = {
+                "World": "https://feeds.bbci.co.uk/news/world/rss.xml",
+                "Canada": "https://globalnews.ca/canada/feed/",
+                "Finance": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
+            }
             
             news_items = []
-            for entry in feed.entries[:25]:
-                news_items.append(f"- {entry.title} ({entry.link})")
+            
+            async def fetch_feed(category, url):
+                try:
+                    feed = await asyncio.to_thread(feedparser.parse, url)
+                    # 每个源取前 10 条，保证 AI 有充足的高质量信息进行总结
+                    return [f"[{category}] - {entry.title} ({entry.link})" for entry in feed.entries[:10]]
+                except Exception as e:
+                    print(f"抓取 {category} 失败: {e}")
+                    return []
+
+            tasks_list = [fetch_feed(cat, url) for cat, url in feeds.items()]
+            results = await asyncio.gather(*tasks_list)
+            
+            for items in results:
+                news_items.extend(items)
                 
-            raw_text = f"这是今天抓取的新闻标题列表：\n" + "\n".join(news_items) + f"\n\n请严格基于这些新闻为我生成今天的{time_name}新闻简报。"
+            raw_text = f"这是今天从各高质量信息源抓取的新闻列表：\n" + "\n".join(news_items) + f"\n\n请严格基于这些新闻为我生成今天的{time_name}新闻简报。"
             
             system_prompt = (
                 "你是一个专业的新闻主编。\n"
-                "必须严格按照以下四个板块进行分类（如果某板块没有新闻，可将其合并或略过）：\n"
+                "必须严格按照以下三个板块进行分类（如果某板块没有新闻，可将其合并或略过）：\n"
                 "1. 🌍 国际要闻\n"
                 "2. 🍁 加拿大新闻\n"
-                "3. 💻 科技动态\n"
-                "4. 📈 金融市场\n"
+                "3. 📈 金融市场\n"
                 "要求：\n"
                 "1. 每个板块精选最具价值的新闻。\n"
                 "2. 每条新闻必须极度简短（控制在20字以内的核心一句话总结）。\n"

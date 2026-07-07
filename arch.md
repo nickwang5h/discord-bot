@@ -68,7 +68,7 @@
 3. **定时与自动化广播型**：
    使用 `discord.ext.tasks` 进行后台循环。
    - `ai_daily.py`：每日固定时间从 Hacker News 爬取 Top 30 热门帖子，交由大模型过滤筛选并生成每日的“AI 前沿快报”。
-   - `news_digest.py`：利用 RSS 爬虫技术 (`feedparser`) 从 Google News 抓取最新的真实头条新闻，交由离线大模型严格按照板块进行总结，保证了极高的稳定性和真实性。
+   - `news_digest.py`：利用 RSS 爬虫技术 (`feedparser`) 从多个高质量且中立的新闻源 (BBC World, CBC Top Stories, WSJ Markets) 并发抓取最新的国际、加拿大和金融新闻，交由离线大模型严格按照板块进行总结，保证了极高的新闻密度和真实性。
 
 ## 5. 数据流向与工作流程 (Data Flow)
 
@@ -100,7 +100,7 @@
 1. **Google Search Grounding (联网搜索功能)**
    - **尝试**：最初在 `/news`（早间新闻）与 `/ask` 等核心命令中默认开启了 `use_search=True`。期望利用 Gemini 原生的 Google Search 工具直接获取实时数据并总结分类。
    - **回滚原因**：Google Gemini Free 额度（15 RPM / 1500 RPD）对 Search 调用的限制极为严苛，极易触发 `429 RESOURCE_EXHAUSTED` 甚至 `503` 宕机。此外，在配合强限制的提示词（如“必须分为4个板块，每板块5条”）时，Search 模式经常由于找不到完美匹配而发生**安全拦截幻觉**，直接返回空字符串（表现为 Discord 卡片内容为空）。
-   - **最终决策**：将所有常规命令的搜索默认关闭。新闻模块 (`news_digest.py`) 则完全弃用 Search，转为使用传统的 RSS 爬虫 (`feedparser`) 获取 Google News 头条，再交由离线模型纯文本总结。稳定性提升至 100%。
+   - **最终决策**：将所有常规命令的搜索默认关闭。新闻模块 (`news_digest.py`) 则完全弃用 Search，转为使用传统的 RSS 爬虫 (`feedparser`) 获取多源高质量新闻 (如 BBC, Global News, WSJ)，再交由离线模型纯文本总结。稳定性提升至 100%。
 
 2. **xAI SDK (Grok) 降级方案**
    - **尝试**：为了应对 Gemini 的 `429` 限流，最初计划接入 Elon Musk 的 Grok 模型作为二级回退网关。编写了集成代码并安装了 `xai-sdk`。
