@@ -54,12 +54,29 @@ class NewsDigest(commands.Cog):
             ]
             
             news_items = []
+            import time
+            current_time = time.time()
             
             async def fetch_feed(category, url):
                 try:
                     feed = await asyncio.to_thread(feedparser.parse, url)
-                    # 每个源取前 12 条，保证多源比对有充足的数据
-                    return [f"[{category}] - {entry.title} ({entry.link})" for entry in feed.entries[:12]]
+                    valid_entries = []
+                    for entry in feed.entries:
+                        # 获取新闻发布时间
+                        entry_time = None
+                        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                            entry_time = time.mktime(entry.published_parsed)
+                        elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
+                            entry_time = time.mktime(entry.updated_parsed)
+                            
+                        # 过滤掉超过 24 小时 (86400秒) 的旧新闻，确保时效性
+                        if entry_time is None or (current_time - entry_time) <= 86400:
+                            valid_entries.append(f"[{category}] - {entry.title} ({entry.link})")
+                            
+                        # 每个源最多取前 12 条最新且符合时间限制的新闻
+                        if len(valid_entries) >= 12:
+                            break
+                    return valid_entries
                 except Exception as e:
                     print(f"抓取 {category} 失败: {e}")
                     return []
