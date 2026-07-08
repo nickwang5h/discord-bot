@@ -31,33 +31,30 @@ class DailyReading(commands.Cog):
             return
 
         try:
-            # 1. 实用场景
-            scenario_task = self.generate_scenario()
-            # 2. RSS 真实语料
-            rss_task = self.generate_rss_reading()
-            # 3. 名言金句
-            quote_task = self.generate_quote()
+            tasks_to_run = [
+                ("🗣️ 每日英语：实用场景", discord.Color.blue(), self.generate_scenario),
+                ("📰 每日英语：外刊精读", discord.Color.green(), self.generate_rss_reading),
+                ("🎙️ 每日英语：TED 演讲精选", discord.Color.purple(), self.generate_ted_reading)
+            ]
 
-            results = await asyncio.gather(scenario_task, rss_task, quote_task, return_exceptions=True)
-
-            titles = ["🗣️ 每日英语：实用场景", "📰 每日英语：外刊精读", "💡 每日英语：金句赏析"]
-            colors = [discord.Color.blue(), discord.Color.green(), discord.Color.purple()]
-
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    print(f"生成阅读卡片 {i} 失败: {result}")
-                    continue
+            for i, (title, color, func) in enumerate(tasks_to_run):
+                try:
+                    result = await func()
+                    if result:
+                        embed = create_ai_embed(
+                            title=title,
+                            description=result,
+                            color=color
+                        )
+                        message = await channel.send(embed=embed)
+                        # 添加打卡 reaction
+                        await message.add_reaction("✅")
+                except Exception as e:
+                    print(f"生成阅读卡片 {title} 失败: {e}")
                 
-                if result:
-                    embed = create_ai_embed(
-                        title=titles[i],
-                        description=result,
-                        color=colors[i]
-                    )
-                    message = await channel.send(embed=embed)
-                    # 添加打卡 reaction
-                    await message.add_reaction("✅")
-                    await asyncio.sleep(1) # 避免速率限制
+                # 如果不是最后一个任务，等待 60 秒再执行下一个，避免并发请求 AI 导致速率限制或内容过长
+                if i < len(tasks_to_run) - 1:
+                    await asyncio.sleep(60)
                     
         except Exception as e:
             print(f"执行阅读推送失败: {e}")
@@ -69,7 +66,8 @@ class DailyReading(commands.Cog):
             "1. 每天选择一个不同的随机场景（例如：星巴克点单、委婉拒绝会议、请求延期、茶水间闲聊等）。首先用一句中文说明今天的场景。\n"
             "2. 提供纯英文的正文内容，难度控制在雅思 6.0 (CEFR B2) 左右，表达地道。\n"
             "3. 在文末提取 3-5 个核心实用词汇或短语，提供中文解释。\n"
-            "4. 严格使用 Markdown 格式，不要加多余的寒暄语。"
+            "4. **绝对禁止**使用 Markdown 表格。请使用简单的加粗列表（如 `- **单词**: 解释`）来展示词汇。\n"
+            "5. 严格使用 Markdown 格式，不要加多余的寒暄语。"
         )
         return await ai_client.ask_ai("请生成今天的实用场景英语阅读素材。", system=system_prompt, use_search=False)
 
@@ -93,29 +91,50 @@ class DailyReading(commands.Cog):
             
             system_prompt = (
                 "你是一个专业的英语外刊精读老师。\n"
-                "我给你提供了一篇真实外媒新闻的标题和摘要。请你：\n"
+                "我给你提供了一篇真实外媒新闻的标题和摘要。由于摘要较短，请你按以下结构生成阅读材料：\n"
                 "1. 在开头附上新闻标题和链接。\n"
-                "2. 提取或改写一段约 150 词的精彩英文引言/正文，保持原汁原味。\n"
-                "3. 在文末提供一句话的中文核心大意总结。\n"
-                "4. 提取 2-3 个好词好句并作中文解释。\n"
-                "5. 严格使用 Markdown 格式。"
+                "2. 【原貌呈现】：将原摘要润色整理为一小段纯正的英文（作为核心事实，**严禁捏造任何原新闻没有提到的事实、数据或引用**）。\n"
+                "3. 【深度短评】：围绕该新闻话题，以客观观察者的视角写一段约 80-100 词的英文短评或背景探讨（Insight / Commentary）。这是为了扩充阅读量，但请明确这是对该话题的延伸探讨，避免与原新闻事实混淆。\n"
+                "4. 提供一段优美的中文大意总结（涵盖新闻事实与短评）。\n"
+                "5. 提取 3 个左右核心好词/词组并作中文解释。\n"
+                "6. **绝对禁止**使用 Markdown 表格。请使用简单的加粗列表（如 `- **单词**: 解释`）来展示词汇。\n"
+                "7. 严格使用 Markdown 格式，排版美观。"
             )
             return await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
         except Exception as e:
             print(f"抓取或生成 RSS 阅读失败: {e}")
             return None
 
-    async def generate_quote(self):
-        system_prompt = (
-            "你是一个充满智慧的英语老师。\n"
-            "请挑选一句经典的英文名言、TED 演讲金句或名著摘录。\n"
-            "要求：\n"
-            "1. 提供英文原句和出处（作者/演讲者）。\n"
-            "2. 提供优美的中文翻译。\n"
-            "3. 写一段 100 词左右的英文赏析或启示（Insight），文字优美且富有启发性。\n"
-            "4. 严格使用 Markdown 格式。"
-        )
-        return await ai_client.ask_ai("请生成今天的金句赏析素材。", system=system_prompt, use_search=False)
+    async def generate_ted_reading(self):
+        try:
+            import feedparser
+            import random
+            # 使用 TED 官方 RSS 源
+            url = "https://www.ted.com/talks/rss"
+            feed = await asyncio.to_thread(feedparser.parse, url)
+            
+            if not feed.entries:
+                return None
+                
+            # 随机选择前 20 个最新演讲中的一个，保持新鲜感
+            entry = random.choice(feed.entries[:20])
+            raw_text = f"Title: {entry.title}\nLink: {entry.link}\nSummary: {entry.summary if hasattr(entry, 'summary') else ''}"
+            
+            system_prompt = (
+                "你是一个充满智慧的英语外教。\n"
+                "我为你提供了一篇最新 TED 演讲的标题和摘要。由于仅有摘要信息，请按以下结构生成阅读卡片：\n"
+                "1. 在开头附上演讲标题和真实的原始链接。\n"
+                "2. 【演讲简介】：将提供的摘要整理为一小段地道的英文介绍（Overview）。**严禁凭空捏造演讲者没有说过的话或强加观点**。\n"
+                "3. 【延伸反思】：围绕该演讲的核心主题，以读者的视角写一段约 100-150 词的深度英文反思（Reflection / Insight）。这一段旨在提供高质量的阅读语料，请围绕话题进行充满启发性的独立探讨。\n"
+                "4. 提供一段优美的中文大意总结（涵盖简介与反思）。\n"
+                "5. 提取 3-5 个核心好词/词组，并作中文解释。\n"
+                "6. **绝对禁止**使用 Markdown 表格。请使用简单的加粗列表（如 `- **单词**: 解释`）来展示词汇。\n"
+                "7. 严格使用 Markdown 格式，排版美观。"
+            )
+            return await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
+        except Exception as e:
+            print(f"抓取或生成 TED 阅读失败: {e}")
+            return None
 
     @reading_loop.before_loop
     async def before_reading_loop(self):
