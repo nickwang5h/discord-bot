@@ -23,6 +23,7 @@
     ├── link_summary.py   # 网页与视频总结监听与命令模块
     ├── ai_daily.py       # 定时任务：AI 日报推送
     ├── news_digest.py    # 定时任务：综合新闻推送
+    ├── daily_reading.py  # 定时任务：每日英文阅读 (Scenario/RSS/TED)
     ├── canada_life.py    # 实用工具：汇率查询等
     ├── dev_tools.py      # 开发者工具：极客词典、正则生成等
     ├── lifestyle.py      # 生活方式助手：菜谱生成等
@@ -69,6 +70,7 @@
    使用 `discord.ext.tasks` 进行后台循环。
    - `ai_daily.py`：每日固定时间从 Hacker News 爬取 Top 30 热门帖子，交由大模型过滤筛选并生成每日的“AI 前沿快报”。
    - `news_digest.py`：利用 RSS 爬虫技术 (`feedparser`) 从多个高质量且中立的新闻源 (BBC World, CBC Top Stories, WSJ Markets) 并发抓取过去24小时内的国际、加拿大和金融新闻，交由离线大模型严格按照板块进行总结，保证了极高的新闻密度和真实性。
+   - `daily_reading.py`：每天早上 7:30 自动生成并推送 3 种不同风格的英文阅读材料（AI 生成实用场景对话、真实 RSS 外刊精读、TED 金句赏析），帮助社区成员培养语感。
 
 ## 5. 数据流向与工作流程 (Data Flow)
 

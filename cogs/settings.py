@@ -61,5 +61,20 @@ class SettingsCog(commands.Cog):
             else:
                 await interaction.followup.send("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
 
+    @app_commands.command(name="set_reading_channel", description="[管理员] 设置每日英文阅读推送的频道")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_reading_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        settings.set_setting("READING_CHANNEL_ID", str(channel.id))
+        await interaction.followup.send(f"✅ 已将每日英文阅读推送频道设置为 {channel.mention}", ephemeral=True)
+
+    @set_reading_channel.error
+    async def set_reading_channel_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(SettingsCog(bot))

@@ -1,8 +1,5 @@
 import datetime
-try:
-    import zoneinfo
-except ImportError:
-    from backports import zoneinfo
+import zoneinfo
 from discord.ext import commands, tasks
 import discord
 import asyncio
