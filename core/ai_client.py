@@ -45,10 +45,11 @@ async def _ask_openrouter(text: str, sys_prompt: str):
     # 定义备选模型瀑布流 (用户自定义的排在第一位，后面跟着系统推荐的顶级免费节点)
     user_model = settings.get_setting("OPENROUTER_MODEL") or os.getenv("OPENROUTER_MODEL")
     fallback_models = [
-        "google/gemma-4-31b-it:free",
+        "qwen/qwen3-next-80b-a3b-instruct:free",
         "nvidia/nemotron-3-ultra-550b-a55b:free",
         "nousresearch/hermes-3-llama-3.1-405b:free",
-        "meta-llama/llama-3.3-70b-instruct:free"
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-4-31b-it:free"
     ]
     
     models_to_try = []
@@ -77,7 +78,7 @@ async def _ask_openrouter(text: str, sys_prompt: str):
                 "messages": messages
             }
             try:
-                async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as resp:
+                async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         try:
@@ -117,11 +118,18 @@ async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条�
             
         config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
         
-        response = await client.aio.models.generate_content(
-            model=model_name,
-            contents=text,
-            config=config
-        )
+        import asyncio
+        try:
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=text,
+                    config=config
+                ),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            raise Exception("Gemini API 请求超时 (30s)")
         return f"{response.text}\n\n<!--MODEL:Gemini ({model_name})-->"
         
     try:
