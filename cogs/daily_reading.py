@@ -109,16 +109,30 @@ class DailyReading(commands.Cog):
         try:
             import feedparser
             import random
+            import aiohttp
             # 使用 TED 官方 RSS 源
-            url = "https://www.ted.com/talks/rss"
-            feed = await asyncio.to_thread(feedparser.parse, url)
+            url = "https://pa.tedcdn.com/talks/rss"
+            
+            async with aiohttp.ClientSession() as session:
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        print(f"TED RSS 获取失败，HTTP 状态码: {resp.status}")
+                        return None
+                    xml_content = await resp.text()
+
+            feed = await asyncio.to_thread(feedparser.parse, xml_content)
             
             if not feed.entries:
+                print("TED RSS 解析成功但未发现任何文章 (entries 为空)")
                 return None
                 
             # 随机选择前 20 个最新演讲中的一个，保持新鲜感
             entry = random.choice(feed.entries[:20])
-            raw_text = f"Title: {entry.title}\nLink: {entry.link}\nSummary: {entry.summary if hasattr(entry, 'summary') else ''}"
+            title = entry.get("title", "Unknown TED Talk")
+            link = entry.get("link", url)
+            summary = entry.get("summary", "")
+            raw_text = f"Title: {title}\nLink: {link}\nSummary: {summary}"
             
             system_prompt = (
                 "你是一个充满智慧的英语外教。\n"
