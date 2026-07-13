@@ -17,7 +17,7 @@ class NewsDigest(commands.Cog):
         self.daily.cancel()
 
     @tasks.loop(time=[
-        datetime.time(hour=7, minute=45, tzinfo=TZ),
+        datetime.time(hour=8, minute=45, tzinfo=TZ),
         datetime.time(hour=15, minute=30, tzinfo=TZ)
     ])
     async def daily(self):

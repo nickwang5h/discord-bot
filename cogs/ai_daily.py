@@ -1,8 +1,5 @@
 import datetime
-try:
-    import zoneinfo
-except ImportError:
-    from backports import zoneinfo
+import zoneinfo
 from discord.ext import commands, tasks
 import discord
 import asyncio
@@ -20,7 +17,7 @@ class AIDaily(commands.Cog):
     def cog_unload(self):
         self.ai_news_daily.cancel()
 
-    @tasks.loop(time=datetime.time(hour=7, minute=15, tzinfo=TZ))
+    @tasks.loop(time=datetime.time(hour=8, minute=15, tzinfo=TZ))
     async def ai_news_daily(self):
         print("执行 AI 资讯日报任务...")
         channel_id = settings.get_setting("NEWS_CHANNEL_ID")
