@@ -36,6 +36,46 @@ def reload_client() -> bool:
 # 启动时初始化
 reload_client()
 
+async def _ask_zhipu(text: str, sys_prompt: str):
+    import aiohttp
+    api_key = settings.get_setting("ZHIPU_API_KEY") or os.getenv("ZHIPU_API_KEY")
+    if not api_key:
+        raise Exception("未配置 ZHIPU_API_KEY")
+        
+    model_name = "glm-4.7-flash"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    messages = []
+    if sys_prompt:
+        messages.append({"role": "system", "content": sys_prompt})
+    messages.append({"role": "user", "content": text})
+    
+    payload = {
+        "model": model_name,
+        "messages": messages
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post("https://open.bigmodel.cn/api/paas/v4/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    try:
+                        content = data["choices"][0]["message"]["content"]
+                        return f"{content}\n\n> 💡 *(本条回复由智谱 AI 免费兜底节点 `{model_name}` 生成)*\n\n<!--MODEL:Zhipu ({model_name})-->"
+                    except (KeyError, IndexError):
+                        raise Exception(f"解析返回格式失败: {data}")
+                else:
+                    error_text = await resp.text()
+                    raise Exception(f"HTTP {resp.status}: {error_text}")
+        except Exception as e:
+            print(f"[Zhipu Fallback] 请求 {model_name} 抛出异常: {e}")
+            raise
+
 async def _ask_openrouter(text: str, sys_prompt: str):
     import aiohttp
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -151,9 +191,15 @@ async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条�
                 print(f"[Fallback Triggered] Gemini 离线调用也失败: {offline_e}")
                 # 继续往下走到 Tier 3
         
+        # Tier 2.5: Zhipu (GLM-4.7-Flash)
+        try:
+            return await _ask_zhipu(text, system)
+        except Exception as zhipu_err:
+            print(f"[Fallback Triggered] 智谱 AI 兜底失败: {zhipu_err}")
+            
         # Tier 3: OpenRouter 终极兜底
         try:
             openrouter_resp = await _ask_openrouter(text, system)
             return openrouter_resp
         except Exception as or_err:
-            return f"⚠️ **AI 服务全线告急**。\n主干 Gemini 出现异常，且后备 OpenRouter 节点唤醒失败。\nGemini 错误: {error_msg}\nOpenRouter 错误: {or_err}"
+            return f"⚠️ **AI 服务全线告急**。\n主干 Gemini 出现异常，智谱备用节点失效，且后备 OpenRouter 节点唤醒失败。\nGemini 错误: {error_msg}\nOpenRouter 错误: {or_err}"
