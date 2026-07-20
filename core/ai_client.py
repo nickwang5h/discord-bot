@@ -42,7 +42,11 @@ async def _ask_groq(text: str, sys_prompt: str):
     if not api_key:
         raise Exception("未配置 GROQ_API_KEY")
         
-    model_name = "llama-3.3-70b-versatile"
+    models_to_try = [
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.6-27b",
+        "llama-3.3-70b-versatile"
+    ]
     
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -54,27 +58,33 @@ async def _ask_groq(text: str, sys_prompt: str):
         messages.append({"role": "system", "content": sys_prompt})
     messages.append({"role": "user", "content": text})
     
-    payload = {
-        "model": model_name,
-        "messages": messages
-    }
-    
+    last_error = ""
     async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    try:
-                        content = data["choices"][0]["message"]["content"]
-                        return f"{content}\n\n> 💡 *(本条回复由 Groq 极速节点 `{model_name}` 生成)*\n\n<!--MODEL:Groq ({model_name})-->"
-                    except (KeyError, IndexError):
-                        raise Exception(f"解析返回格式失败: {data}")
-                else:
-                    error_text = await resp.text()
-                    raise Exception(f"HTTP {resp.status}: {error_text}")
-        except Exception as e:
-            print(f"[Groq Fallback] 请求 {model_name} 抛出异常: {e}")
-            raise
+        for model_name in models_to_try:
+            payload = {
+                "model": model_name,
+                "messages": messages
+            }
+            try:
+                async with session.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        try:
+                            content = data["choices"][0]["message"]["content"]
+                            return f"{content}\n\n> 💡 *(本条回复由 Groq 极速节点 `{model_name}` 生成)*\n\n<!--MODEL:Groq ({model_name})-->"
+                        except (KeyError, IndexError):
+                            raise Exception(f"解析返回格式失败: {data}")
+                    else:
+                        error_text = await resp.text()
+                        last_error = f"HTTP {resp.status}: {error_text}"
+                        print(f"[Groq Fallback] 节点 {model_name} 失败: {last_error}")
+                        continue
+            except Exception as e:
+                last_error = str(e)
+                print(f"[Groq Fallback] 请求 {model_name} 抛出异常: {last_error}")
+                continue
+                
+    raise Exception(f"所有 Groq 备选节点均已耗尽。最后一次错误: {last_error}")
 
 async def _ask_zhipu(text: str, sys_prompt: str):
     import aiohttp
