@@ -109,9 +109,13 @@
    - **回滚原因**：经过文档与 API 调研，确认 Grok 没有真正意义上的“免费测试额度”，必须绑定信用卡预充值 (Pre-paid Billing) 才能使用。这与本项目“零成本/纯免费白嫖”的运维理念不符。
    - **最终决策**：卸载 `xai-sdk`。引入 **OpenRouter** 平台（采用原生 `aiohttp`，0 额外依赖），使用其提供的海量免费节点（如 `google/gemini-2.5-flash-exp:free`）完美实现了免费兜底。
 
-3. **智谱 AI (GLM-4.7-Flash) 中间层兜底**
-   - **尝试**：为了在主模型 Gemini 和终极兜底 OpenRouter 之间增加一层更稳定、生成质量更高的中文原生大模型缓冲，我们引入了智谱 AI 的免费模型 `glm-4.7-flash`。
-   - **最终决策**：在 `core/ai_client.py` 中实现了 Tier 2.5 降级逻辑。当 Gemini 发生异常时，优先调用智谱 AI (兼容 OpenAI API 格式)，如果智谱也失败，再退化到 OpenRouter 的免费节点池。维持了“零成本”原则。
+3. **Groq 极速节点中间层兜底**
+   - **尝试**：在进入智谱或 OpenRouter 之前，我们引入了 Groq 的 `llama-3.3-70b-versatile` 作为一级中间缓冲。由于 Groq 依托其特制的 LPU 架构，推理速度极快（数百 Tokens/秒），非常适合弥补 Gemini 失败时的实时交互体验。
+   - **最终决策**：在 `core/ai_client.py` 中实现了 Tier 2.2 降级逻辑。
+
+4. **智谱 AI (GLM-4.7-Flash) 中文层兜底**
+   - **尝试**：为了在 Groq 和终极兜底 OpenRouter 之间增加一层更稳定、生成质量更高的中文原生大模型缓冲，我们引入了智谱 AI 的免费模型 `glm-4.7-flash`。
+   - **最终决策**：在 `core/ai_client.py` 中实现了 Tier 2.5 降级逻辑。如果 Groq 也失败，则退化到智谱 AI，最后退化到 OpenRouter 的免费节点池。维持了“零成本”原则。
 
 ## 8. 开发与运维规范 (Development & DevOps Practices)
 
