@@ -26,7 +26,33 @@ class AdvancedNews(commands.Cog):
         match = re.search(r'```(?:json)?(.*?)```', text, re.DOTALL)
         if match:
             return match.group(1).strip()
-        return text.strip()
+        
+        # Fallback: locate the JSON array or object boundaries
+        text = text.strip()
+        if text.startswith('[') and text.endswith(']'):
+            return text
+        if text.startswith('{') and text.endswith('}'):
+            return text
+            
+        start_array = text.find('[')
+        end_array = text.rfind(']')
+        start_obj = text.find('{')
+        end_obj = text.rfind('}')
+        
+        is_array = start_array != -1 and end_array != -1 and start_array < end_array
+        is_obj = start_obj != -1 and end_obj != -1 and start_obj < end_obj
+        
+        if is_array and is_obj:
+            if start_array < start_obj:
+                return text[start_array:end_array+1]
+            else:
+                return text[start_obj:end_obj+1]
+        elif is_array:
+            return text[start_array:end_array+1]
+        elif is_obj:
+            return text[start_obj:end_obj+1]
+            
+        return text
 
     async def _process_hourly_fetch(self):
         print("[Advanced News] 开始每小时的数据抓取...")
