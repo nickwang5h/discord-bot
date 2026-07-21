@@ -46,6 +46,21 @@ class SettingsCog(commands.Cog):
                 await interaction.response.send_message("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
             else:
                 await interaction.followup.send("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
+
+    @app_commands.command(name="set_test_news_channel", description="[管理员] 设置高级新闻 (Test News) 推送的频道")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_test_news_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        settings.set_setting("TEST_NEWS_CHANNEL_ID", str(channel.id))
+        await interaction.followup.send(f"✅ 已将高级新闻推送频道设置为 {channel.mention}", ephemeral=True)
+
+    @set_test_news_channel.error
+    async def set_test_news_channel_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ 您没有权限使用此命令，仅限管理员使用。", ephemeral=True)
     @app_commands.command(name="set_model", description="[管理员] 设置全局 AI 模型 (例如 gemini-3.5-flash)")
     @app_commands.checks.has_permissions(administrator=True)
     async def set_model(self, interaction: discord.Interaction, model_name: str):

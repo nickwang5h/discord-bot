@@ -93,6 +93,8 @@ class AdvancedNews(commands.Cog):
                 "注意：如果发现两条资讯讲述完全相同的事情，请只保留其中更全面的一条。"
             )
             
+            response = None
+            clean_resp = None
             try:
                 response = await ai_client.ask_ai(prompt_text, system=system_prompt, use_search=False)
                 clean_resp = self._clean_json_response(response)
@@ -103,6 +105,10 @@ class AdvancedNews(commands.Cog):
                 print(f"[Advanced News] 批次处理完成，成功存入 {added} 条记录。")
             except Exception as e:
                 print(f"[Advanced News] AI 分析或 JSON 解析失败: {e}")
+                if response:
+                    print(f"[Advanced News] 导致失败的原始模型输出片段: {response[:800]}")
+                if clean_resp:
+                    print(f"[Advanced News] 提取后尝试解析的文本片段: {clean_resp[:800]}")
 
     async def _process_scheduled_digest(self, channel, time_name):
         print(f"[Advanced News] 正在生成 {time_name} 精读简报...")
@@ -132,6 +138,7 @@ class AdvancedNews(commands.Cog):
         system_prompt = (
             "你是一个高级私人主编。用户为你提供了一批已经经过初步打分筛选的高质量资讯。\n"
             "请你负责将它们整理成一篇排版精美、逻辑连贯的 Discord Markdown 简报。\n"
+            "注意：这是每天生成的【早间/晚间特刊】，请在导语中带上今天的时间感，提炼出这半天以来的核心脉络。\n"
             "要求：\n"
             "1. 将内容分为两大板块：【🚀 核心焦点 (Tech & Finance)】和【🔮 灵感与视野 (打破茧房的拓展发现)】。\n"
             "2. 使用给定的预摘要，但你可以润色使其更引人入胜。必须包含原文的 Markdown 链接 `[标题](URL)`。\n"
@@ -141,7 +148,7 @@ class AdvancedNews(commands.Cog):
         digest = await ai_client.ask_ai(prompt_text, system=system_prompt, use_search=False)
         
         embed = create_ai_embed(
-            title=f"💎 高级精读简报 ({time_name})",
+            title=f"💎 高级精读简报 ({time_name}特刊)",
             description=digest,
             color=discord.Color.purple()
         )
@@ -170,9 +177,9 @@ class AdvancedNews(commands.Cog):
         is_morning = now.hour < 12
         time_name = "早间" if is_morning else "晚间"
         
-        channel_id = settings.get_setting("NEWS_CHANNEL_ID")
+        channel_id = settings.get_setting("TEST_NEWS_CHANNEL_ID")
         if not channel_id:
-            print("[Advanced News] 未设置 NEWS_CHANNEL_ID，跳过推送。")
+            print("[Advanced News] 未设置 TEST_NEWS_CHANNEL_ID，跳过推送。")
             return
             
         channel = self.bot.get_channel(int(channel_id))
