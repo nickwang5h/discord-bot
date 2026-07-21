@@ -43,8 +43,8 @@ async def _ask_groq(text: str, sys_prompt: str):
         raise Exception("未配置 GROQ_API_KEY")
         
     models_to_try = [
-        "openai/gpt-oss-120b",
         "qwen/qwen3.6-27b",
+        "openai/gpt-oss-120b",
         "llama-3.3-70b-versatile"
     ]
     

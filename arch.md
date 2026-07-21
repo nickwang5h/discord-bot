@@ -17,12 +17,15 @@
 ├── core/                 # 核心基础服务层 (Core Services)
 │   ├── ai_client.py      # Gemini AI 客户端封装
 │   ├── settings.py       # 本地 JSON 配置读写
+│   ├── news_cache.py     # 本地轻量级 JSON 缓存管理 (用于高级资讯)
+│   ├── data_ingester.py  # 统一的数据摄取抽象层 (RSS, Obsidian等)
 │   └── utils.py          # 通用工具函数 (如统一消息卡片 Embed 生成)
 └── cogs/                 # 业务逻辑模块层 (Discord Cogs)
     ├── ask.py            # AI 智能问答模块
     ├── link_summary.py   # 网页与视频总结监听与命令模块
     ├── ai_daily.py       # 定时任务：AI 日报推送
     ├── news_digest.py    # 定时任务：综合新闻推送
+    ├── advanced_news.py  # 实验性：高级私人精读简报 (Hourly Fetch + 定时汇总)
     ├── daily_reading.py  # 定时任务：每日英文阅读 (Scenario/RSS/TED)
     ├── canada_life.py    # 实用工具：汇率查询等
     ├── dev_tools.py      # 开发者工具：极客词典、正则生成等
@@ -70,6 +73,7 @@
    使用 `discord.ext.tasks` 进行后台循环。
    - `ai_daily.py`：每日固定时间从 Hacker News 爬取 Top 30 热门帖子，交由大模型过滤筛选并生成每日的“AI 前沿快报”。
    - `news_digest.py`：利用 RSS 爬虫技术 (`feedparser`) 从多个高质量且中立的新闻源 (BBC World, CBC Top Stories, WSJ Markets) 并发抓取过去24小时内的国际、加拿大和金融新闻，交由离线大模型严格按照板块进行总结，保证了极高的新闻密度和真实性。
+   - `advanced_news.py`：【实验性】高级私人精读简报。解耦了抓取和推送，包含两个子任务。`hourly_fetch` 每小时调用 `data_ingester.py` 抓取多源数据并由大模型进行防信息茧房打分，缓存在 `news_cache.py` 中；`scheduled_digest` 定期汇总高分缓存数据由模型生成最终的精美排版，推送后自动清理缓存以控制存储空间。
    - `daily_reading.py`：每天早上 7:30 自动生成并推送 3 种不同风格的英文阅读材料（AI 生成实用场景对话、真实 RSS 外刊精读、TED 金句赏析），帮助社区成员培养语感。
 
 ## 5. 数据流向与工作流程 (Data Flow)
