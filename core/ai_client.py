@@ -74,8 +74,11 @@ async def _ask_groq(text: str, sys_prompt: str, json_mode: bool = False):
                         data = await resp.json()
                         try:
                             content = data["choices"][0]["message"]["content"]
-                            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-                            return f"{content}\n\n> 💡 *(本条回复由 Groq 极速节点 `{model_name}` 生成)*\n\n<!--MODEL:Groq ({model_name})-->"
+                            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+                            content = re.sub(r'<think>.*', '', content, flags=re.DOTALL).strip()
+                            if not content:
+                                content = "⚠️ [响应异常] 模型思考被打断或超时，未能完成生成。"
+                            return f"{content}\n\n<!--MODEL:Groq ({model_name})-->"
                         except (KeyError, IndexError):
                             raise Exception(f"解析返回格式失败: {data}")
                     else:
@@ -122,8 +125,11 @@ async def _ask_zhipu(text: str, sys_prompt: str, json_mode: bool = False):
                     data = await resp.json()
                     try:
                         content = data["choices"][0]["message"]["content"]
-                        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-                        return f"{content}\n\n> 💡 *(本条回复由智谱 AI 免费兜底节点 `{model_name}` 生成)*\n\n<!--MODEL:Zhipu ({model_name})-->"
+                        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+                        content = re.sub(r'<think>.*', '', content, flags=re.DOTALL).strip()
+                        if not content:
+                            content = "⚠️ [响应异常] 模型思考被打断或超时，未能完成生成。"
+                        return f"{content}\n\n<!--MODEL:Zhipu ({model_name})-->"
                     except (KeyError, IndexError):
                         raise Exception(f"解析返回格式失败: {data}")
                 else:
@@ -182,8 +188,11 @@ async def _ask_openrouter(text: str, sys_prompt: str, json_mode: bool = False):
                         data = await resp.json()
                         try:
                             content = data["choices"][0]["message"]["content"]
-                            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-                            return f"{content}\n\n> 💡 *(本条回复由 OpenRouter 免费兜底节点 `{model_name}` 生成)*\n\n<!--MODEL:OpenRouter ({model_name})-->"
+                            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+                            content = re.sub(r'<think>.*', '', content, flags=re.DOTALL).strip()
+                            if not content:
+                                content = "⚠️ [响应异常] 模型思考被打断或超时，未能完成生成。"
+                            return f"{content}\n\n<!--MODEL:OpenRouter ({model_name})-->"
                         except (KeyError, IndexError):
                             raise Exception(f"解析返回格式失败: {data}")
                     else:
