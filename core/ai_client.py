@@ -79,7 +79,7 @@ async def _ask_groq(text: str, sys_prompt: str, json_mode: bool = False):
                             content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
                             content = re.sub(r'<think>.*', '', content, flags=re.DOTALL).strip()
                             if not content:
-                                content = "⚠️ [响应异常] 模型思考被打断或超时，未能完成生成。"
+                                raise Exception("模型思考被打断或超时，未能输出有效内容")
                             return f"{content}\n\n<!--MODEL:Groq ({model_name})-->"
                         except (KeyError, IndexError):
                             raise Exception(f"解析返回格式失败: {data}")
@@ -130,7 +130,7 @@ async def _ask_zhipu(text: str, sys_prompt: str, json_mode: bool = False):
                         content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
                         content = re.sub(r'<think>.*', '', content, flags=re.DOTALL).strip()
                         if not content:
-                            content = "⚠️ [响应异常] 模型思考被打断或超时，未能完成生成。"
+                            raise Exception("模型思考被打断或超时，未能输出有效内容")
                         return f"{content}\n\n<!--MODEL:Zhipu ({model_name})-->"
                     except (KeyError, IndexError):
                         raise Exception(f"解析返回格式失败: {data}")
@@ -193,7 +193,7 @@ async def _ask_openrouter(text: str, sys_prompt: str, json_mode: bool = False):
                             content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
                             content = re.sub(r'<think>.*', '', content, flags=re.DOTALL).strip()
                             if not content:
-                                content = "⚠️ [响应异常] 模型思考被打断或超时，未能完成生成。"
+                                raise Exception("模型思考被打断或超时，未能输出有效内容")
                             return f"{content}\n\n<!--MODEL:OpenRouter ({model_name})-->"
                         except (KeyError, IndexError):
                             raise Exception(f"解析返回格式失败: {data}")
