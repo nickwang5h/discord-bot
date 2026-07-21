@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -10,6 +11,7 @@ from core import settings
 
 client = None
 model_available = False
+gemini_cooldown_until = 0.0
 
 def reload_client() -> bool:
     global client, model_available
@@ -208,6 +210,8 @@ async def _ask_openrouter(text: str, sys_prompt: str, json_mode: bool = False):
     raise Exception(f"所有 OpenRouter 备选节点均已耗尽。最后一次错误: {last_error}")
 
 async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条列出。", use_search: bool = False, fallback_offline: bool = True, json_mode: bool = False):
+    global gemini_cooldown_until
+    
     if not model_available or not client:
         return "⚠️ 当前尚未配置大模型 API Key，请联系管理员使用 `/set_gemini_key` 进行配置。"
     
@@ -244,12 +248,27 @@ async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条�
         return f"{response.text}\n\n<!--MODEL:Gemini ({model_name})-->"
         
     try:
+        # Check global cooldown
+        if time.time() < gemini_cooldown_until:
+            remaining = int(gemini_cooldown_until - time.time())
+            raise Exception(f"API 在冷却中 (剩余 {remaining} 秒)，直接跳过调用")
+            
         # Tier 1: Gemini with Search
         return await _try_gemini(with_search=use_search)
     except Exception as e:
         error_msg = str(e)
         print(f"[Fallback Triggered] Gemini API 抛出异常: {error_msg}")
         
+        # If it's a 429 quota/rate limit error, set cooldown
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            # Try to parse exact retry time, otherwise default to 60s
+            delay = 60.0
+            match = re.search(r'retry in ([\d\.]+)s', error_msg)
+            if match:
+                delay = float(match.group(1))
+            gemini_cooldown_until = time.time() + delay
+            print(f"[Cooldown Enabled] Gemini 触发 429，未来 {delay} 秒内的请求将直接走兜底。")
+            
         # 如果是搜索模式且允许离线降级，先尝试 Gemini 离线版
         if use_search:
             if not fallback_offline:
