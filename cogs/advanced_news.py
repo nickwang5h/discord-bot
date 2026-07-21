@@ -83,17 +83,25 @@ class AdvancedNews(commands.Cog):
                 prompt_text += f"[{idx+1}] 标题: {item['title']}\n来源分类: {item['source']}\n链接: {item['url']}\n内容摘要: {item['content'][:300]}...\n\n"
                 
             system_prompt = (
-                "你是一个高级的新闻分析和过滤引擎。请对提供的资讯列表进行去重和打分评估。\n"
+                "你是一个高级的新闻分析和过滤引擎。请对提供的资讯列表进行去重和深度打分评估。\n"
                 "你必须严格返回一个 JSON 对象，包含一个 `news` 数组，不要包含任何其他文字解释。\n"
-                "每个数组元素的字段如下：\n"
-                "- `title`: 新闻原标题\n"
-                "- `url`: 新闻原链接\n"
+                "【严格的质量与新奇度过滤规则】：\n"
+                "1. 区分“随机小众”和“可连接的新奇”。只给那些能与用户兴趣建立连接的新奇内容打高分。\n"
+                "2. 寻找反直觉结论、跨领域迁移、技术变化、文化信号或独特案例。\n"
+                "3. 拒绝低质量、标题党、纯营销、无可验证内容。模型不能仅凭来源名判断质量，应基于标题、摘要、正文证据和来源历史指标。\n"
+                "【字段说明】（所有分数 0.0 - 1.0，可以使用小数）：\n"
+                "- `title`: 原标题\n"
+                "- `url`: 原链接\n"
                 "- `summary`: 1-2 句话的深度硬核摘要\n"
-                "- `theme_score`: 1-10分，基于与『科技 (Tech/AI)』和『金融 (Finance)』主题的相关度和重要性打分。\n"
-                "- `serendipity_score`: 1-10分，这是『打破信息茧房』的分数。如果这条新闻虽然不是科技或金融，但非常新奇、有趣、或者蕴含极高价值的洞察，请给高分。\n"
+                "- `topic`: 一个极简的主题标签（如 'AI模型', '地缘政治', '芯片' 等，用于后续去重）\n"
+                "- `relevance_score`: 与『科技/AI』和『金融』兴趣集群的最近相关度（0.0-1.0）\n"
+                "- `novelty_score`: 相比于常见的日常新闻，它的新颖度（0.0-1.0）\n"
+                "- `quality_score`: 来源与内容的综合质量（0.0-1.0）\n"
+                "- `llm_interestingness`: 作为大模型，你觉得它有多有趣/值得一读（0.0-1.0）\n"
+                "- `cross_domain_bridge`: 是否提供了跨领域的启发（0.0-1.0）\n"
+                "- `connection_reason`: 必须指出和用户已有兴趣的具体连接，绝对不允许使用“你可能感兴趣”这种废话，必须具体（如“这揭示了AI在材料科学的新应用”）。\n"
                 "示例输出格式：\n"
-                "{\n  \"news\": [\n    {\"title\": \"标题\", \"url\": \"http...\", \"summary\": \"摘要\", \"theme_score\": 8, \"serendipity_score\": 5}\n  ]\n}\n"
-                "注意：如果发现两条资讯讲述完全相同的事情，请只保留其中更全面的一条。"
+                "{\n  \"news\": [\n    {\"title\": \"标题\", \"url\": \"http...\", \"summary\": \"摘要\", \"topic\": \"AI硬件\", \"relevance_score\": 0.9, \"novelty_score\": 0.8, \"quality_score\": 0.9, \"llm_interestingness\": 0.8, \"cross_domain_bridge\": 0.5, \"connection_reason\": \"具体连接理由\"}\n  ]\n}\n"
             )
             
             response = None
@@ -103,6 +111,19 @@ class AdvancedNews(commands.Cog):
                 clean_resp = self._clean_json_response(response)
                 parsed = json.loads(clean_resp)
                 scored_items = parsed.get("news", parsed) if isinstance(parsed, dict) else parsed
+
+                for item in scored_items:
+                    try:
+                        rel = float(item.get("relevance_score", 0.0))
+                        nov = float(item.get("novelty_score", 0.0))
+                        qual = float(item.get("quality_score", 0.0))
+                        inte = float(item.get("llm_interestingness", 0.0))
+                        cross = float(item.get("cross_domain_bridge", 0.0))
+                        
+                        discovery_score = (0.25 * rel) + (0.20 * nov) + (0.20 * qual) + (0.20 * inte) + (0.15 * cross)
+                        item["discovery_score"] = discovery_score
+                    except (ValueError, TypeError):
+                        item["discovery_score"] = 0.0
 
                 
                 # Append to cache
@@ -123,31 +144,50 @@ class AdvancedNews(commands.Cog):
             print("[Advanced News] 缓存中没有未推送的新闻，跳过。")
             return
             
-        # Select top items: Top 5 by theme_score, Top 3 by serendipity_score
-        unpushed.sort(key=lambda x: x.get("theme_score", 0), reverse=True)
-        top_theme = unpushed[:7]
+        # Apply hard constraints
+        valid_items = []
+        for item in unpushed:
+            try:
+                qual = float(item.get("quality_score", 0.0))
+                nov = float(item.get("novelty_score", 0.0))
+                rel = float(item.get("relevance_score", 0.0))
+                if qual >= 0.60 and nov >= 0.40 and rel >= 0.30:
+                    valid_items.append(item)
+            except (ValueError, TypeError):
+                pass
+                
+        # Sort by discovery_score descending
+        valid_items.sort(key=lambda x: x.get("discovery_score", 0.0), reverse=True)
         
-        remaining = [item for item in unpushed if item not in top_theme]
-        remaining.sort(key=lambda x: x.get("serendipity_score", 0), reverse=True)
-        top_serendipity = remaining[:3]
-        
-        selected_items = top_theme + top_serendipity
+        # Greedily select max 10 items, max 2 per topic
+        selected_items = []
+        topic_counts = {}
+        for item in valid_items:
+            topic = item.get("topic", "未分类")
+            if topic_counts.get(topic, 0) < 2:
+                selected_items.append(item)
+                topic_counts[topic] = topic_counts.get(topic, 0) + 1
+            if len(selected_items) >= 10:
+                break
         
         if not selected_items:
             return
             
         prompt_text = "以下是为您精选的高分资讯（包含科技/金融主线，以及高新奇度的拓展阅读）：\n\n"
         for item in selected_items:
-            prompt_text += f"- 标题: {item.get('title')}\n  链接: {item.get('url')}\n  主题分: {item.get('theme_score')}, 新奇分: {item.get('serendipity_score')}\n  预摘要: {item.get('summary')}\n\n"
+            prompt_text += f"- 标题: {item.get('title')}\n  链接: {item.get('url')}\n  推荐理由: {item.get('connection_reason')}\n  预摘要: {item.get('summary')}\n\n"
             
         system_prompt = (
-            "你是一个高级私人主编。用户为你提供了一批已经经过初步打分筛选的高质量资讯。\n"
-            "请你负责将它们整理成一篇排版精美、逻辑连贯的 Discord Markdown 简报。\n"
-            "注意：这是每天生成的【早间/晚间特刊】，请在导语中带上今天的时间感，提炼出这半天以来的核心脉络。\n"
-            "要求：\n"
-            "1. 将内容分为两大板块：【🚀 核心焦点 (Tech & Finance)】和【🔮 灵感与视野 (打破茧房的拓展发现)】。\n"
-            "2. 使用给定的预摘要，但你可以润色使其更引人入胜。必须包含原文的 Markdown 链接 `[标题](URL)`。\n"
-            "3. 在开头写一句简短的主编导语，总结这批资讯的核心脉络。\n"
+            f"你是一个高级私人主编。用户为你提供了一批已经经过初步打分筛选的高质量资讯。\n"
+            f"请你负责将它们整理成一篇排版精美、逻辑连贯的 Discord Markdown 简报。\n"
+            f"注意：这是每天生成的【{time_name}特刊】，请在导语中带上今天的时间感，提炼出这半天以来的核心脉络。\n"
+            f"要求：\n"
+            f"1. 将内容分为两大板块：【🚀 核心焦点 (Tech & Finance)】和【🔮 灵感与视野 (打破茧房的拓展发现)】。\n"
+            f"2. 排版规范：**必须加粗原新闻标题**，并且**摘要内容必须保持正常的非加粗文本**。\n"
+            f"3. 极简主义：每条新闻的摘要必须极其简短（严格控制在核心的一两句话内，绝不啰嗦）。\n"
+            f"4. 正确的单条格式范例：\n"
+            f"   - **[新闻的原始标题](URL)**：这里是一句直击要害的极简摘要。\n"
+            f"5. 在最开头写一句简短的主编导语，一语道破这批资讯的核心脉络。\n"
         )
         
         digest = await ai_client.ask_ai(prompt_text, system=system_prompt, use_search=False)

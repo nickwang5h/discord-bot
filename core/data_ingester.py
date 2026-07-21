@@ -48,8 +48,14 @@ async def fetch_all_sources() -> list:
     feeds = [
         ("Tech", "https://feeds.arstechnica.com/arstechnica/index"),
         ("Tech", "https://techcrunch.com/feed/"),
+        ("Tech", "https://www.theverge.com/rss/index.xml"),
+        ("Tech", "https://www.wired.com/feed/rss"),
         ("World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
-        ("Finance", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml") # WSJ
+        ("World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"),
+        ("Finance", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"), # WSJ
+        ("Finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"), # CNBC Finance
+        ("Science", "https://www.nature.com/nature.rss"),
+        ("AI", "https://openai.com/blog/rss.xml")
     ]
     
     tasks = [fetch_rss(url, cat) for cat, url in feeds]
