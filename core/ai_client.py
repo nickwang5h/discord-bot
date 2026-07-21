@@ -36,7 +36,7 @@ def reload_client() -> bool:
 # 启动时初始化
 reload_client()
 
-async def _ask_groq(text: str, sys_prompt: str):
+async def _ask_groq(text: str, sys_prompt: str, json_mode: bool = False):
     import aiohttp
     api_key = settings.get_setting("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -65,6 +65,8 @@ async def _ask_groq(text: str, sys_prompt: str):
                 "model": model_name,
                 "messages": messages
             }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
             try:
                 async with session.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
@@ -86,7 +88,7 @@ async def _ask_groq(text: str, sys_prompt: str):
                 
     raise Exception(f"所有 Groq 备选节点均已耗尽。最后一次错误: {last_error}")
 
-async def _ask_zhipu(text: str, sys_prompt: str):
+async def _ask_zhipu(text: str, sys_prompt: str, json_mode: bool = False):
     import aiohttp
     api_key = settings.get_setting("ZHIPU_API_KEY") or os.getenv("ZHIPU_API_KEY")
     if not api_key:
@@ -108,6 +110,8 @@ async def _ask_zhipu(text: str, sys_prompt: str):
         "model": model_name,
         "messages": messages
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     
     async with aiohttp.ClientSession() as session:
         try:
@@ -126,7 +130,7 @@ async def _ask_zhipu(text: str, sys_prompt: str):
             print(f"[Zhipu Fallback] 请求 {model_name} 抛出异常: {e}")
             raise
 
-async def _ask_openrouter(text: str, sys_prompt: str):
+async def _ask_openrouter(text: str, sys_prompt: str, json_mode: bool = False):
     import aiohttp
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -167,6 +171,8 @@ async def _ask_openrouter(text: str, sys_prompt: str):
                 "model": model_name,
                 "messages": messages
             }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
             try:
                 async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                     if resp.status == 200:
@@ -188,7 +194,7 @@ async def _ask_openrouter(text: str, sys_prompt: str):
                 
     raise Exception(f"所有 OpenRouter 备选节点均已耗尽。最后一次错误: {last_error}")
 
-async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条列出。", use_search: bool = False, fallback_offline: bool = True):
+async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条列出。", use_search: bool = False, fallback_offline: bool = True, json_mode: bool = False):
     if not model_available or not client:
         return "⚠️ 当前尚未配置大模型 API Key，请联系管理员使用 `/set_gemini_key` 进行配置。"
     
@@ -205,6 +211,8 @@ async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条�
             config_kwargs["system_instruction"] = system
         if tools:
             config_kwargs["tools"] = tools
+        if json_mode:
+            config_kwargs["response_mime_type"] = "application/json"
             
         config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
         
@@ -243,19 +251,19 @@ async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条�
         
         # Tier 2.2: Groq 极速节点
         try:
-            return await _ask_groq(text, system)
+            return await _ask_groq(text, system, json_mode=json_mode)
         except Exception as groq_err:
             print(f"[Fallback Triggered] Groq 兜底失败: {groq_err}")
 
         # Tier 2.5: Zhipu (GLM-4.7-Flash)
         try:
-            return await _ask_zhipu(text, system)
+            return await _ask_zhipu(text, system, json_mode=json_mode)
         except Exception as zhipu_err:
             print(f"[Fallback Triggered] 智谱 AI 兜底失败: {zhipu_err}")
             
         # Tier 3: OpenRouter 终极兜底
         try:
-            openrouter_resp = await _ask_openrouter(text, system)
+            openrouter_resp = await _ask_openrouter(text, system, json_mode=json_mode)
             return openrouter_resp
         except Exception as or_err:
             return f"⚠️ **AI 服务全线告急**。\n主干 Gemini 出现异常，Groq 与智谱备用节点均失效，且后备 OpenRouter 节点唤醒失败。\nGemini 错误: {error_msg}\nOpenRouter 错误: {or_err}"

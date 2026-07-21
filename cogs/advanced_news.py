@@ -23,6 +23,9 @@ class AdvancedNews(commands.Cog):
         
     def _clean_json_response(self, text: str) -> str:
         """Helper to extract JSON from possible markdown formatting."""
+        # Strip DeepSeek reasoning blocks if any
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        
         match = re.search(r'```(?:json)?(.*?)```', text, re.DOTALL)
         if match:
             return match.group(1).strip()
@@ -81,24 +84,26 @@ class AdvancedNews(commands.Cog):
                 
             system_prompt = (
                 "你是一个高级的新闻分析和过滤引擎。请对提供的资讯列表进行去重和打分评估。\n"
-                "你必须严格返回一个 JSON 数组（Array of Objects），不要包含任何其他文字解释。\n"
-                "每个对象的字段如下：\n"
+                "你必须严格返回一个 JSON 对象，包含一个 `news` 数组，不要包含任何其他文字解释。\n"
+                "每个数组元素的字段如下：\n"
                 "- `title`: 新闻原标题\n"
                 "- `url`: 新闻原链接\n"
                 "- `summary`: 1-2 句话的深度硬核摘要\n"
                 "- `theme_score`: 1-10分，基于与『科技 (Tech/AI)』和『金融 (Finance)』主题的相关度和重要性打分。\n"
                 "- `serendipity_score`: 1-10分，这是『打破信息茧房』的分数。如果这条新闻虽然不是科技或金融，但非常新奇、有趣、或者蕴含极高价值的洞察，请给高分。\n"
                 "示例输出格式：\n"
-                "[\n  {\"title\": \"标题\", \"url\": \"http...\", \"summary\": \"摘要\", \"theme_score\": 8, \"serendipity_score\": 5}\n]\n"
+                "{\n  \"news\": [\n    {\"title\": \"标题\", \"url\": \"http...\", \"summary\": \"摘要\", \"theme_score\": 8, \"serendipity_score\": 5}\n  ]\n}\n"
                 "注意：如果发现两条资讯讲述完全相同的事情，请只保留其中更全面的一条。"
             )
             
             response = None
             clean_resp = None
             try:
-                response = await ai_client.ask_ai(prompt_text, system=system_prompt, use_search=False)
+                response = await ai_client.ask_ai(prompt_text, system=system_prompt, use_search=False, json_mode=True)
                 clean_resp = self._clean_json_response(response)
-                scored_items = json.loads(clean_resp)
+                parsed = json.loads(clean_resp)
+                scored_items = parsed.get("news", parsed) if isinstance(parsed, dict) else parsed
+
                 
                 # Append to cache
                 added = news_cache.add_items(scored_items)
