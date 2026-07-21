@@ -1,4 +1,5 @@
 import os
+import re
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -73,6 +74,7 @@ async def _ask_groq(text: str, sys_prompt: str, json_mode: bool = False):
                         data = await resp.json()
                         try:
                             content = data["choices"][0]["message"]["content"]
+                            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
                             return f"{content}\n\n> 💡 *(本条回复由 Groq 极速节点 `{model_name}` 生成)*\n\n<!--MODEL:Groq ({model_name})-->"
                         except (KeyError, IndexError):
                             raise Exception(f"解析返回格式失败: {data}")
@@ -120,6 +122,7 @@ async def _ask_zhipu(text: str, sys_prompt: str, json_mode: bool = False):
                     data = await resp.json()
                     try:
                         content = data["choices"][0]["message"]["content"]
+                        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
                         return f"{content}\n\n> 💡 *(本条回复由智谱 AI 免费兜底节点 `{model_name}` 生成)*\n\n<!--MODEL:Zhipu ({model_name})-->"
                     except (KeyError, IndexError):
                         raise Exception(f"解析返回格式失败: {data}")
@@ -179,6 +182,7 @@ async def _ask_openrouter(text: str, sys_prompt: str, json_mode: bool = False):
                         data = await resp.json()
                         try:
                             content = data["choices"][0]["message"]["content"]
+                            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
                             return f"{content}\n\n> 💡 *(本条回复由 OpenRouter 免费兜底节点 `{model_name}` 生成)*\n\n<!--MODEL:OpenRouter ({model_name})-->"
                         except (KeyError, IndexError):
                             raise Exception(f"解析返回格式失败: {data}")
