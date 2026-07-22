@@ -1,72 +1,45 @@
-import asyncio
-import time
+from core.feeds import FeedSource, fetch_feed, fetch_feeds
+
+SOURCES = [
+    FeedSource("Tech", "https://feeds.arstechnica.com/arstechnica/index", "Ars Technica"),
+    FeedSource("Tech", "https://techcrunch.com/feed/", "TechCrunch"),
+    FeedSource("Tech", "https://www.theverge.com/rss/index.xml", "The Verge"),
+    FeedSource("Tech", "https://www.wired.com/feed/rss", "Wired"),
+    FeedSource("World", "https://feeds.bbci.co.uk/news/world/rss.xml", "BBC World"),
+    FeedSource("World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", "NYT World"),
+    FeedSource("Finance", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml", "WSJ Markets"),
+    FeedSource("Finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", "CNBC Finance"),
+    FeedSource("Science", "https://www.nature.com/nature.rss", "Nature"),
+    FeedSource("AI", "https://openai.com/blog/rss.xml", "OpenAI"),
+]
+
+
+def _as_dict(item) -> dict:
+    return {
+        "title": item.title,
+        "url": item.url,
+        "content": item.summary,
+        "source": item.category,
+    }
+
 
 async def fetch_rss(url: str, category: str, max_age_seconds: int = 86400, max_items: int = 5):
-    """
-    Fetch and parse an RSS feed.
-    """
-    import feedparser
-    try:
-        feed = await asyncio.to_thread(feedparser.parse, url)
-        current_time = time.time()
-        valid_entries = []
-        for entry in feed.entries:
-            entry_time = None
-            if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                entry_time = time.mktime(entry.published_parsed)
-            elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-                entry_time = time.mktime(entry.updated_parsed)
-                
-            if entry_time is None or (current_time - entry_time) <= max_age_seconds:
-                valid_entries.append({
-                    "title": entry.title,
-                    "url": entry.link,
-                    "content": entry.get("summary", ""),
-                    "source": category
-                })
-                
-            if len(valid_entries) >= max_items:
-                break
-        return valid_entries
-    except Exception as e:
-        print(f"Error fetching RSS {url}: {e}")
-        return []
+    """Compatibility wrapper for callers that fetch one RSS source."""
+    items = await fetch_feed(
+        FeedSource(category, url),
+        max_age_seconds=max_age_seconds,
+        max_items=max_items,
+    )
+    return [_as_dict(item) for item in items]
 
-async def fetch_obsidian_notes():
-    """
-    Placeholder for future Obsidian notes ingestion.
-    """
-    # In the future, this can read from a local directory or API.
+
+async def fetch_obsidian_notes() -> list[dict]:
+    """Placeholder for future local-note ingestion."""
     return []
 
-async def fetch_all_sources() -> list:
-    """
-    Aggregates data from all configured sources.
-    Returns a list of dicts: {"title": str, "url": str, "content": str, "source": str}
-    """
-    # RSS Sources (can be moved to settings later)
-    feeds = [
-        ("Tech", "https://feeds.arstechnica.com/arstechnica/index"),
-        ("Tech", "https://techcrunch.com/feed/"),
-        ("Tech", "https://www.theverge.com/rss/index.xml"),
-        ("Tech", "https://www.wired.com/feed/rss"),
-        ("World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
-        ("World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"),
-        ("Finance", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"), # WSJ
-        ("Finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"), # CNBC Finance
-        ("Science", "https://www.nature.com/nature.rss"),
-        ("AI", "https://openai.com/blog/rss.xml")
-    ]
-    
-    tasks = [fetch_rss(url, cat) for cat, url in feeds]
-    
-    # Can append other sources here
-    tasks.append(fetch_obsidian_notes())
-    
-    results = await asyncio.gather(*tasks)
-    
-    all_items = []
-    for r in results:
-        all_items.extend(r)
-        
-    return all_items
+
+async def fetch_all_sources() -> list[dict]:
+    items = await fetch_feeds(SOURCES, max_age_seconds=86400, max_items_per_source=4)
+    result = [_as_dict(item) for item in items]
+    result.extend(await fetch_obsidian_notes())
+    return result

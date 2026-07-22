@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 from cogs.advanced_news import AdvancedNews
 from cogs.ai_daily import AIDaily
 from core import ai_client
+from core.ai_providers import AIResult
 from core.utils import create_ai_embed, normalize_markdown_tables
 
 
@@ -47,7 +48,7 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
         ai_client.gemini_cooldown_until = 0.0
 
     async def test_missing_gemini_uses_configured_fallback(self):
-        groq = AsyncMock(return_value="fallback\n\n<!--MODEL:Groq (test)-->")
+        groq = AsyncMock(return_value=AIResult("fallback", "Groq", "test"))
         with (
             patch.object(ai_client, "model_available", False),
             patch.object(ai_client, "client", None),
@@ -61,7 +62,7 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_rate_limit_does_not_retry_gemini_offline(self):
         generate = AsyncMock(side_effect=Exception("429 RESOURCE_EXHAUSTED retry in 12s"))
         fake_client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
-        groq = AsyncMock(return_value="fallback\n\n<!--MODEL:Groq (test)-->")
+        groq = AsyncMock(return_value=AIResult("fallback", "Groq", "test"))
 
         with (
             patch.object(ai_client, "model_available", True),
@@ -77,7 +78,7 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_cooldown_skips_gemini(self):
         generate = AsyncMock(side_effect=AssertionError("Gemini should not be called"))
         fake_client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
-        groq = AsyncMock(return_value="fallback\n\n<!--MODEL:Groq (test)-->")
+        groq = AsyncMock(return_value=AIResult("fallback", "Groq", "test"))
         ai_client.gemini_cooldown_until = time.time() + 30
 
         with (
@@ -111,13 +112,13 @@ class DigestDeliveryTests(unittest.IsolatedAsyncioTestCase):
         cog._build_daily_embed = AsyncMock(side_effect=[RuntimeError("temporary"), embed])
         channel = SimpleNamespace(send=AsyncMock())
 
-        async def immediate_retry(_task_name, build):
+        async def immediate_retry(_task_name, build, **_kwargs):
             try:
                 return await build()
             except RuntimeError:
                 return await build()
 
-        with patch("cogs.ai_daily.with_retry", side_effect=immediate_retry):
+        with patch("core.jobs.retry_async", side_effect=immediate_retry):
             await cog._run_daily(channel)
 
         self.assertEqual(cog._build_daily_embed.await_count, 2)
@@ -138,10 +139,10 @@ class DigestDeliveryTests(unittest.IsolatedAsyncioTestCase):
         cog._build_daily_embed = AsyncMock(side_effect=build)
         channel = SimpleNamespace(send=AsyncMock())
 
-        async def no_wait_retry(_task_name, builder):
+        async def no_wait_retry(_task_name, builder, **_kwargs):
             return await builder()
 
-        with patch("cogs.ai_daily.with_retry", side_effect=no_wait_retry):
+        with patch("core.jobs.retry_async", side_effect=no_wait_retry):
             first_run = asyncio.create_task(cog._run_daily(channel))
             await started.wait()
             await cog._run_daily(channel)
@@ -158,11 +159,11 @@ class DigestDeliveryTests(unittest.IsolatedAsyncioTestCase):
         cog._build_scheduled_digest = AsyncMock(return_value=(embed, ["https://example.com"]))
         channel = SimpleNamespace(send=AsyncMock())
 
-        async def no_wait_retry(_task_name, build):
+        async def no_wait_retry(_task_name, build, **_kwargs):
             return await build()
 
         with (
-            patch("cogs.advanced_news.with_retry", side_effect=no_wait_retry),
+            patch("core.jobs.retry_async", side_effect=no_wait_retry),
             patch("cogs.advanced_news.news_cache.mark_as_pushed", side_effect=RuntimeError("disk error")),
         ):
             with self.assertRaisesRegex(RuntimeError, "disk error"):

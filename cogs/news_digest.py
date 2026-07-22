@@ -1,12 +1,15 @@
 import datetime
-import zoneinfo
+import logging
 from discord.ext import commands, tasks
 import discord
 import asyncio
+from config import TZ
 from core import settings, ai_client
-from core.utils import create_ai_embed, with_retry
+from core.feeds import FeedSource, fetch_feeds
+from core.jobs import run_delivery_job
+from core.utils import create_ai_embed
 
-TZ = zoneinfo.ZoneInfo("America/Toronto")
+logger = logging.getLogger(__name__)
 
 class NewsDigest(commands.Cog):
     def __init__(self, bot):
@@ -18,51 +21,19 @@ class NewsDigest(commands.Cog):
         self.daily.cancel()
 
     async def _build_news_digest(self, time_name, greeting):
-        print("正在从高质量新闻源抓取新闻...")
-        import feedparser
-        
+        logger.info("正在从高质量新闻源抓取新闻")
+
         # 高质量中立源 (支持同类别多源比对)
         feeds = [
-            ("World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
-            ("Canada", "https://globalnews.ca/canada/feed/"),
-            ("Finance", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"), # WSJ
-            ("Finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=120000000&id=100003114"), # CNBC
-            ("Finance", "https://finance.yahoo.com/news/rss") # Yahoo Finance
+            FeedSource("World", "https://feeds.bbci.co.uk/news/world/rss.xml", "BBC World"),
+            FeedSource("Canada", "https://globalnews.ca/canada/feed/", "Global News"),
+            FeedSource("Finance", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml", "WSJ Markets"),
+            FeedSource("Finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=120000000&id=100003114", "CNBC"),
+            FeedSource("Finance", "https://finance.yahoo.com/news/rss", "Yahoo Finance"),
         ]
-        
-        news_items = []
-        import time
-        current_time = time.time()
-        
-        async def fetch_feed(category, url):
-            try:
-                feed = await asyncio.to_thread(feedparser.parse, url)
-                valid_entries = []
-                for entry in feed.entries:
-                    # 获取新闻发布时间
-                    entry_time = None
-                    if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                        entry_time = time.mktime(entry.published_parsed)
-                    elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-                        entry_time = time.mktime(entry.updated_parsed)
-                        
-                    # 过滤掉超过 24 小时 (86400秒) 的旧新闻，确保时效性
-                    if entry_time is None or (current_time - entry_time) <= 86400:
-                        valid_entries.append(f"[{category}] - {entry.title} ({entry.link})")
-                        
-                    # 每个源最多取前 12 条最新且符合时间限制的新闻
-                    if len(valid_entries) >= 12:
-                        break
-                return valid_entries
-            except Exception as e:
-                print(f"抓取 {category} 失败: {e}")
-                return []
 
-        tasks_list = [fetch_feed(cat, url) for cat, url in feeds]
-        results = await asyncio.gather(*tasks_list)
-        
-        for items in results:
-            news_items.extend(items)
+        feed_items = await fetch_feeds(feeds, max_age_seconds=86400, max_items_per_source=8)
+        news_items = [f"[{item.category}] - {item.title} ({item.url})" for item in feed_items]
 
         if not news_items:
             raise RuntimeError("所有新闻源均未返回可用条目")
@@ -100,17 +71,12 @@ class NewsDigest(commands.Cog):
         return embed
 
     async def _run_news_digest(self, channel, time_name, greeting):
-        if self._delivery_lock.locked():
-            print(f"[{time_name}新闻推送] 已有任务执行中，跳过重复触发。")
-            return
-
-        async with self._delivery_lock:
-            # 抓取/生成可安全重试；发送本身不重试，保证单次任务至多推送一次。
-            embed = await with_retry(
-                f"{time_name}新闻生成",
-                lambda: self._build_news_digest(time_name, greeting),
-            )
-            await channel.send(embed=embed)
+        return await run_delivery_job(
+            lock=self._delivery_lock,
+            task_name=f"{time_name}新闻生成",
+            build=lambda: self._build_news_digest(time_name, greeting),
+            deliver=lambda embed: channel.send(embed=embed),
+        )
 
     @tasks.loop(time=[
         datetime.time(hour=8, minute=45, tzinfo=TZ),
@@ -122,21 +88,21 @@ class NewsDigest(commands.Cog):
         time_name = "早间" if is_morning else "午后"
         greeting = "☀️ 早上好！早间新闻速递 ☕" if is_morning else "☕ 下午好！午后新闻速递 📰"
         
-        print(f"执行{time_name}新闻抓取任务...")
+        logger.info("执行%s新闻抓取任务", time_name)
         channel_id = settings.get_setting("NEWS_CHANNEL_ID")
         if not channel_id:
-            print("未设置 NEWS_CHANNEL_ID，跳过新闻推送。")
+            logger.warning("未设置 NEWS_CHANNEL_ID，跳过新闻推送")
             return
             
         channel = self.bot.get_channel(int(channel_id))
         if not channel:
-            print(f"找不到配置的频道 ID: {channel_id}")
+            logger.error("找不到配置的频道 ID: %s", channel_id)
             return
             
         try:
             await self._run_news_digest(channel, time_name, greeting)
         except Exception:
-            pass # 错误已在 with_retry 中被记录
+            logger.exception("%s新闻任务执行失败", time_name)
         
     @daily.before_loop
     async def before_daily(self):

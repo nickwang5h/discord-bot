@@ -1,13 +1,15 @@
 import datetime
-import zoneinfo
+import logging
 from discord.ext import commands, tasks
 import discord
 import asyncio
 import aiohttp
+from config import TZ
 from core import settings, ai_client
-from core.utils import create_ai_embed, with_retry
+from core.jobs import run_delivery_job
+from core.utils import create_ai_embed
 
-TZ = zoneinfo.ZoneInfo("America/Toronto")
+logger = logging.getLogger(__name__)
 
 class AIDaily(commands.Cog):
     def __init__(self, bot):
@@ -25,7 +27,9 @@ class AIDaily(commands.Cog):
             async with session.get("https://hacker-news.firebaseio.com/v0/topstories.json") as response:
                 response.raise_for_status()
                 story_ids = await response.json()
-                story_ids = story_ids[:50]
+                if not isinstance(story_ids, list) or not story_ids:
+                    raise RuntimeError("Hacker News 未返回 story ID")
+                story_ids = story_ids[:30]
             
             # 2. 并发获取文章详情
             async def fetch_story(story_id):
@@ -34,7 +38,7 @@ class AIDaily(commands.Cog):
                         res.raise_for_status()
                         return await res.json()
                 except Exception as error:
-                    print(f"抓取 HN 条目 {story_id} 失败: {error}")
+                    logger.warning("抓取 HN 条目 %s 失败: %s", story_id, error)
                     return None
             
             tasks_list = [fetch_story(sid) for sid in story_ids]
@@ -48,6 +52,9 @@ class AIDaily(commands.Cog):
                 url = item.get('url', f"https://news.ycombinator.com/item?id={item.get('id')}")
                 score = item.get('score', 0)
                 news_items.append(f"[{i+1}] Title: {item.get('title')} | Score: {score} | URL: {url}")
+
+        if not news_items:
+            raise RuntimeError("Hacker News 未返回可用文章")
         
         raw_text = "\n".join(news_items)
         
@@ -78,32 +85,30 @@ class AIDaily(commands.Cog):
         return embed
 
     async def _run_daily(self, channel):
-        if self._delivery_lock.locked():
-            print("[AI 资讯日报] 已有任务执行中，跳过重复触发。")
-            return
-
-        async with self._delivery_lock:
-            # 仅重试抓取和生成；Discord 发送只执行一次，避免超时后的重复报告。
-            embed = await with_retry("AI 资讯日报生成", self._build_daily_embed)
-            await channel.send(embed=embed)
+        return await run_delivery_job(
+            lock=self._delivery_lock,
+            task_name="AI 资讯日报生成",
+            build=self._build_daily_embed,
+            deliver=lambda embed: channel.send(embed=embed),
+        )
 
     @tasks.loop(time=datetime.time(hour=8, minute=15, tzinfo=TZ))
     async def ai_news_daily(self):
-        print("执行 AI 资讯日报任务...")
+        logger.info("执行 AI 资讯日报任务")
         channel_id = settings.get_setting("NEWS_CHANNEL_ID")
         if not channel_id:
-            print("未设置 NEWS_CHANNEL_ID，跳过 AI 日报推送。")
+            logger.warning("未设置 NEWS_CHANNEL_ID，跳过 AI 日报推送")
             return
             
         channel = self.bot.get_channel(int(channel_id))
         if not channel:
-            print(f"找不到配置的频道 ID: {channel_id}")
+            logger.error("找不到配置的频道 ID: %s", channel_id)
             return
             
         try:
             await self._run_daily(channel)
         except Exception:
-            pass # 错误已在 with_retry 中被记录
+            logger.exception("AI 资讯日报执行失败")
 
         
     @ai_news_daily.before_loop

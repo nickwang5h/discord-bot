@@ -1,51 +1,81 @@
-import os
+import logging
+
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 
-load_dotenv(override=True)
+from config import DISCORD_TOKEN, LOG_LEVEL, PROJECT_ROOT
+from core.logging_config import configure_logging
+
+configure_logging(LOG_LEVEL)
+logger = logging.getLogger(__name__)
+
+
+class DiscordBot(commands.Bot):
+    async def setup_hook(self) -> None:
+        """Load extensions once per process, before Discord dispatches ready events."""
+        cogs_dir = PROJECT_ROOT / "cogs"
+        for path in sorted(cogs_dir.glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+            extension = f"cogs.{path.stem}"
+            try:
+                await self.load_extension(extension)
+                logger.info("成功加载扩展: %s", extension)
+            except Exception:
+                logger.exception("加载扩展失败: %s", extension)
+
+        try:
+            synced = await self.tree.sync()
+            logger.info("已同步 %s 个斜杠命令", len(synced))
+        except Exception:
+            logger.exception("斜杠命令同步失败")
+
+    async def on_ready(self) -> None:
+        logger.info("机器人已上线: %s (guilds=%s)", self.user, len(self.guilds))
+
+
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = DiscordBot(command_prefix="!", intents=intents)
 
-@bot.event
-async def on_ready():
-    print(f"[{bot.user}] 正在加载 Cogs...")
-    for filename in os.listdir('./cogs'):
-        if filename.endswith('.py') and filename != '__init__.py':
-            try:
-                await bot.load_extension(f'cogs.{filename[:-3]}')
-                print(f"成功加载: cogs.{filename[:-3]}")
-            except Exception as e:
-                print(f"加载 cogs.{filename[:-3]} 失败: {e}")
-                
-    try:
-        await bot.tree.sync()
-        print("斜杠命令同步完成")
-    except Exception as e:
-        print(f"斜杠命令同步失败: {e}")
-        
-    print(f"上线啦：{bot.user}")
 
 @bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: discord.app_commands.AppCommandError,
+) -> None:
     if isinstance(error, discord.app_commands.CommandOnCooldown):
-        await interaction.response.send_message(f"⏳ 技能冷却中，请在 {error.retry_after:.1f} 秒后再试。", ephemeral=True)
+        message = f"⏳ 技能冷却中，请在 {error.retry_after:.1f} 秒后再试。"
+    elif isinstance(error, discord.app_commands.MissingPermissions):
+        message = "❌ 您没有权限执行这个命令。"
     else:
-        print(f"Command Error: {error}")
-        if not interaction.response.is_done():
-            try:
-                await interaction.response.send_message("❌ 发生错误，无法执行命令。", ephemeral=True)
-            except discord.errors.InteractionResponded:
-                pass
+        logger.error(
+            "斜杠命令执行失败",
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        message = "❌ 发生错误，无法执行命令。"
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException:
+        logger.exception("向用户发送命令错误提示失败")
+
 
 @bot.tree.command(name="ping", description="测试 bot 是否存活")
 async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message("pong 🏓")
+    await interaction.response.send_message(f"pong 🏓 {round(bot.latency * 1000)}ms")
+
+
+def main() -> int:
+    if not DISCORD_TOKEN or DISCORD_TOKEN == "your_discord_bot_token_here":
+        logger.error("请在 .env 文件中配置有效的 DISCORD_TOKEN")
+        return 1
+    bot.run(DISCORD_TOKEN, log_handler=None)
+    return 0
+
 
 if __name__ == "__main__":
-    token = os.getenv("DISCORD_TOKEN")
-    if not token or token == "your_discord_bot_token_here":
-        print("请在 .env 文件中配置有效的 DISCORD_TOKEN")
-    else:
-        bot.run(token)
+    raise SystemExit(main())

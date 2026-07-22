@@ -1,15 +1,17 @@
 import datetime
-import zoneinfo
 import json
+import logging
 import re
 import asyncio
 from discord.ext import commands, tasks
 import discord
 
+from config import TZ
 from core import settings, ai_client, news_cache, data_ingester
-from core.utils import create_ai_embed, with_retry
+from core.jobs import run_delivery_job
+from core.utils import create_ai_embed
 
-TZ = zoneinfo.ZoneInfo("America/Toronto")
+logger = logging.getLogger(__name__)
 
 class AdvancedNews(commands.Cog):
     def __init__(self, bot):
@@ -59,20 +61,17 @@ class AdvancedNews(commands.Cog):
         return text
 
     async def _process_hourly_fetch(self):
-        print("[Advanced News] 开始每小时的数据抓取...")
+        logger.info("[Advanced News] 开始每小时的数据抓取")
         raw_items = await data_ingester.fetch_all_sources()
         
         # Filter out ones already in cache before sending to AI to save tokens
-        new_items = []
-        for item in raw_items:
-            if not news_cache.is_duplicate(item["url"], item["title"]):
-                new_items.append(item)
+        new_items = news_cache.filter_new_items(raw_items)
                 
         if not new_items:
-            print("[Advanced News] 没有发现新的资讯。")
+            logger.info("[Advanced News] 没有发现新的资讯")
             return
             
-        print(f"[Advanced News] 发现 {len(new_items)} 条新资讯，正在交由 AI 分析...")
+        logger.info("[Advanced News] 发现 %s 条新资讯，正在交由 AI 分析", len(new_items))
         
         # We process in batches to avoid context limit if there are too many
         batch_size = 15
@@ -108,10 +107,25 @@ class AdvancedNews(commands.Cog):
             response = None
             clean_resp = None
             try:
-                response = await ai_client.ask_ai(prompt_text, system=system_prompt, use_search=False, json_mode=True)
+                response = await ai_client.ask_ai(
+                    prompt_text,
+                    system=system_prompt,
+                    use_search=False,
+                    json_mode=True,
+                    max_output_tokens=8192,
+                )
                 clean_resp = self._clean_json_response(response)
                 parsed = json.loads(clean_resp)
                 scored_items = parsed.get("news", parsed) if isinstance(parsed, dict) else parsed
+
+                if not isinstance(scored_items, list):
+                    raise ValueError("模型 JSON 中的 news 必须是数组")
+                allowed_urls = {item["url"] for item in batch}
+                scored_items = [
+                    item
+                    for item in scored_items
+                    if isinstance(item, dict) and item.get("url") in allowed_urls
+                ]
 
                 for item in scored_items:
                     try:
@@ -129,20 +143,20 @@ class AdvancedNews(commands.Cog):
                 
                 # Append to cache
                 added = news_cache.add_items(scored_items)
-                print(f"[Advanced News] 批次处理完成，成功存入 {added} 条记录。")
+                logger.info("[Advanced News] 批次处理完成，成功存入 %s 条记录", added)
             except Exception as e:
-                print(f"[Advanced News] AI 分析或 JSON 解析失败: {e}")
+                logger.exception("[Advanced News] AI 分析或 JSON 解析失败: %s", e)
                 if response:
-                    print(f"[Advanced News] 导致失败的原始模型输出片段: {response[:800]}")
+                    logger.debug("[Advanced News] 原始模型输出片段: %s", response[:800])
                 if clean_resp:
-                    print(f"[Advanced News] 提取后尝试解析的文本片段: {clean_resp[:800]}")
+                    logger.debug("[Advanced News] JSON 文本片段: %s", clean_resp[:800])
 
     async def _build_scheduled_digest(self, time_name):
-        print(f"[Advanced News] 正在生成 {time_name} 精读简报...")
+        logger.info("[Advanced News] 正在生成 %s 精读简报", time_name)
         
         unpushed = news_cache.get_unpushed_items()
         if not unpushed:
-            print("[Advanced News] 缓存中没有未推送的新闻，跳过。")
+            logger.info("[Advanced News] 缓存中没有未推送的新闻，跳过")
             return
             
         # Apply hard constraints
@@ -210,25 +224,22 @@ class AdvancedNews(commands.Cog):
         return embed, pushed_urls
 
     async def _run_scheduled_digest(self, channel, time_name):
-        if self._digest_delivery_lock.locked():
-            print(f"[Advanced News] {time_name}精读简报已有任务执行中，跳过重复触发。")
-            return
+        async def deliver(result):
+            embed, _pushed_urls = result
+            return await channel.send(embed=embed)
 
-        async with self._digest_delivery_lock:
-            # 只重试数据准备和 AI 生成，避免发送成功后因后处理异常而重发。
-            result = await with_retry(
-                f"高级精读简报生成 ({time_name})",
-                lambda: self._build_scheduled_digest(time_name),
-            )
-            if result is None:
-                return
-
-            embed, pushed_urls = result
-            await channel.send(embed=embed)
-
-            # 发送成功后再更新缓存；此处失败也不会触发 Discord 重发。
+        def mark_delivered(result):
+            _embed, pushed_urls = result
             news_cache.mark_as_pushed(pushed_urls)
             news_cache.clear_pushed()
+
+        return await run_delivery_job(
+            lock=self._digest_delivery_lock,
+            task_name=f"高级精读简报生成 ({time_name})",
+            build=lambda: self._build_scheduled_digest(time_name),
+            deliver=deliver,
+            on_delivered=mark_delivered,
+        )
 
     @tasks.loop(minutes=60)
     async def hourly_fetch(self):
@@ -249,18 +260,18 @@ class AdvancedNews(commands.Cog):
         
         channel_id = settings.get_setting("TEST_NEWS_CHANNEL_ID")
         if not channel_id:
-            print("[Advanced News] 未设置 TEST_NEWS_CHANNEL_ID，跳过推送。")
+            logger.warning("[Advanced News] 未设置 TEST_NEWS_CHANNEL_ID，跳过推送")
             return
             
         channel = self.bot.get_channel(int(channel_id))
         if not channel:
-            print(f"[Advanced News] 找不到配置的频道 ID: {channel_id}")
+            logger.error("[Advanced News] 找不到配置的频道 ID: %s", channel_id)
             return
             
         try:
             await self._run_scheduled_digest(channel, time_name)
         except Exception as e:
-            print(f"Scheduled digest failed: {e}")
+            logger.exception("高级精读定时任务失败: %s", e)
 
     @scheduled_digest.before_loop
     async def before_scheduled_digest(self):

@@ -1,17 +1,21 @@
 import datetime
-import zoneinfo
+import logging
 from discord.ext import commands, tasks
 import discord
 import asyncio
+from config import TZ
 from core import settings, ai_client
+from core.feeds import FeedSource, fetch_feed
+from core.jobs import RetryPolicy, retry_async
 from core.utils import create_ai_embed
 import random
 
-TZ = zoneinfo.ZoneInfo("America/Toronto")
+logger = logging.getLogger(__name__)
 
 class DailyReading(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._delivery_lock = asyncio.Lock()
         self.reading_loop.start()
 
     def cog_unload(self):
@@ -19,45 +23,47 @@ class DailyReading(commands.Cog):
 
     @tasks.loop(time=[datetime.time(hour=7, minute=30, tzinfo=TZ)])
     async def reading_loop(self):
-        print("执行每日英文阅读推送任务...")
+        logger.info("执行每日英文阅读推送任务")
         channel_id = settings.get_setting("READING_CHANNEL_ID")
         if not channel_id:
-            print("未设置 READING_CHANNEL_ID，跳过每日英文阅读推送。")
+            logger.warning("未设置 READING_CHANNEL_ID，跳过每日英文阅读推送")
             return
             
         channel = self.bot.get_channel(int(channel_id))
         if not channel:
-            print(f"找不到配置的频道 ID: {channel_id}")
+            logger.error("找不到配置的频道 ID: %s", channel_id)
             return
 
-        try:
+        await self._run_reading(channel)
+
+    async def _run_reading(self, channel):
+        if self._delivery_lock.locked():
+            logger.warning("每日英文阅读已有任务执行中，跳过重复触发")
+            return
+
+        async with self._delivery_lock:
             tasks_to_run = [
                 ("🗣️ 每日英语：实用场景", discord.Color.blue(), self.generate_scenario),
                 ("📰 每日英语：外刊精读", discord.Color.green(), self.generate_rss_reading),
-                ("🎙️ 每日英语：TED 演讲精选", discord.Color.purple(), self.generate_ted_reading)
+                ("🎙️ 每日英语：TED 演讲精选", discord.Color.purple(), self.generate_ted_reading),
             ]
+            retry_policy = RetryPolicy(attempts=2, initial_delay_seconds=30)
 
-            for i, (title, color, func) in enumerate(tasks_to_run):
+            for index, (title, color, generate) in enumerate(tasks_to_run):
                 try:
-                    result = await func()
+                    result = await retry_async(title, generate, policy=retry_policy)
                     if result:
-                        embed = create_ai_embed(
-                            title=title,
-                            description=result,
-                            color=color
-                        )
+                        embed = create_ai_embed(title=title, description=result, color=color)
                         message = await channel.send(embed=embed)
-                        # 添加打卡 reaction
-                        await message.add_reaction("✅")
-                except Exception as e:
-                    print(f"生成阅读卡片 {title} 失败: {e}")
-                
-                # 如果不是最后一个任务，等待 60 秒再执行下一个，避免并发请求 AI 导致速率限制或内容过长
-                if i < len(tasks_to_run) - 1:
+                        try:
+                            await message.add_reaction("✅")
+                        except discord.HTTPException:
+                            logger.warning("阅读卡片已发送，但添加打卡 reaction 失败: %s", title)
+                except Exception as error:
+                    logger.exception("生成阅读卡片 %s 失败: %s", title, error)
+
+                if index < len(tasks_to_run) - 1:
                     await asyncio.sleep(60)
-                    
-        except Exception as e:
-            print(f"执行阅读推送失败: {e}")
 
     async def generate_scenario(self):
         system_prompt = (
@@ -69,11 +75,15 @@ class DailyReading(commands.Cog):
             "4. **绝对禁止**使用 Markdown 表格。请使用简单的加粗列表（如 `- **单词**: 解释`）来展示词汇。\n"
             "5. 严格使用 Markdown 格式，不要加多余的寒暄语。"
         )
-        return await ai_client.ask_ai("请生成今天的实用场景英语阅读素材。", system=system_prompt, use_search=False)
+        return await ai_client.ask_ai(
+            "请生成今天的实用场景英语阅读素材。",
+            system=system_prompt,
+            use_search=False,
+            raise_on_failure=True,
+        )
 
     async def generate_rss_reading(self):
         try:
-            import feedparser
             # 这里选取 Lifehacker 或者 NPR
             urls = [
                 "https://feeds.npr.org/1004/rss.xml", # NPR World
@@ -81,13 +91,17 @@ class DailyReading(commands.Cog):
                 "https://feeds.npr.org/1046/rss.xml"  # NPR Pop Culture
             ]
             url = random.choice(urls)
-            feed = await asyncio.to_thread(feedparser.parse, url)
-            
-            if not feed.entries:
-                return None
-                
-            entry = feed.entries[0]
-            raw_text = f"Title: {entry.title}\nLink: {entry.link}\nSummary: {entry.summary if hasattr(entry, 'summary') else ''}"
+            items = await fetch_feed(
+                FeedSource("Reading", url, "NPR"),
+                max_age_seconds=None,
+                max_items=1,
+            )
+
+            if not items:
+                raise RuntimeError("NPR RSS 未返回文章")
+
+            entry = items[0]
+            raw_text = f"Title: {entry.title}\nLink: {entry.url}\nSummary: {entry.summary}"
             
             system_prompt = (
                 "你是一个专业的英语外刊精读老师。\n"
@@ -100,38 +114,35 @@ class DailyReading(commands.Cog):
                 "6. **绝对禁止**使用 Markdown 表格。请使用简单的加粗列表（如 `- **单词**: 解释`）来展示词汇。\n"
                 "7. 严格使用 Markdown 格式，排版美观。"
             )
-            return await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
+            return await ai_client.ask_ai(
+                raw_text,
+                system=system_prompt,
+                use_search=False,
+                raise_on_failure=True,
+            )
         except Exception as e:
-            print(f"抓取或生成 RSS 阅读失败: {e}")
-            return None
+            logger.exception("抓取或生成 RSS 阅读失败: %s", e)
+            raise
 
     async def generate_ted_reading(self):
         try:
-            import feedparser
-            import random
-            import aiohttp
             # 使用 TED 官方 RSS 源
             url = "https://pa.tedcdn.com/talks/rss"
-            
-            async with aiohttp.ClientSession() as session:
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status != 200:
-                        print(f"TED RSS 获取失败，HTTP 状态码: {resp.status}")
-                        return None
-                    xml_content = await resp.text()
 
-            feed = await asyncio.to_thread(feedparser.parse, xml_content)
-            
-            if not feed.entries:
-                print("TED RSS 解析成功但未发现任何文章 (entries 为空)")
-                return None
-                
+            items = await fetch_feed(
+                FeedSource("Reading", url, "TED"),
+                max_age_seconds=None,
+                max_items=20,
+            )
+
+            if not items:
+                raise RuntimeError("TED RSS 未返回文章")
+
             # 随机选择前 20 个最新演讲中的一个，保持新鲜感
-            entry = random.choice(feed.entries[:20])
-            title = entry.get("title", "Unknown TED Talk")
-            link = entry.get("link", url)
-            summary = entry.get("summary", "")
+            entry = random.choice(items)
+            title = entry.title or "Unknown TED Talk"
+            link = entry.url or url
+            summary = entry.summary
             raw_text = f"Title: {title}\nLink: {link}\nSummary: {summary}"
             
             system_prompt = (
@@ -145,10 +156,15 @@ class DailyReading(commands.Cog):
                 "6. **绝对禁止**使用 Markdown 表格。请使用简单的加粗列表（如 `- **单词**: 解释`）来展示词汇。\n"
                 "7. 严格使用 Markdown 格式，排版美观。"
             )
-            return await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
+            return await ai_client.ask_ai(
+                raw_text,
+                system=system_prompt,
+                use_search=False,
+                raise_on_failure=True,
+            )
         except Exception as e:
-            print(f"抓取或生成 TED 阅读失败: {e}")
-            return None
+            logger.exception("抓取或生成 TED 阅读失败: %s", e)
+            raise
 
     @reading_loop.before_loop
     async def before_reading_loop(self):

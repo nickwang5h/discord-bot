@@ -1,84 +1,93 @@
-import json
-import os
+import logging
 import time
+from typing import Any
 
-CACHE_FILE = "data/news_cache.json"
+from config import PROJECT_ROOT
+from core.storage import JsonStore
+
+logger = logging.getLogger(__name__)
+
+CACHE_FILE = PROJECT_ROOT / "data" / "news_cache.json"
 MAX_CACHE_SIZE = 150
+_cache_store = JsonStore(CACHE_FILE, list)
 
-def _ensure_dir():
-    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
 
-def load_cache() -> list:
-    if not os.path.exists(CACHE_FILE):
-        return []
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading news cache: {e}")
-        return []
+def load_cache() -> list[dict[str, Any]]:
+    data = _cache_store.read()
+    return data if isinstance(data, list) else []
 
-def save_cache(data: list):
-    _ensure_dir()
-    try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"Error saving news cache: {e}")
 
-def add_items(new_items: list):
-    """
-    Appends new items to the cache. 
-    Items should be dicts: {"id": str, "title": str, "url": str, "summary": str, "theme_score": int, "serendipity_score": int, "timestamp": float}
-    """
-    cache = load_cache()
-    
-    # Check for duplicates by URL or title
-    existing_urls = {item.get("url") for item in cache if item.get("url")}
-    existing_titles = {item.get("title") for item in cache if item.get("title")}
-    
+def save_cache(data: list[dict[str, Any]]) -> None:
+    _cache_store.write(data)
+
+
+def add_items(new_items: list[dict[str, Any]]) -> int:
+    """Append unseen items and retain the newest MAX_CACHE_SIZE entries."""
     added = 0
-    for item in new_items:
-        if item.get("url") in existing_urls or item.get("title") in existing_titles:
-            continue
-        item["timestamp"] = time.time()
-        cache.append(item)
-        added += 1
-        
-    # Enforce MAX_CACHE_SIZE by keeping the newest ones
-    if len(cache) > MAX_CACHE_SIZE:
-        cache.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-        cache = cache[:MAX_CACHE_SIZE]
-        
-    save_cache(cache)
+
+    def update(cache: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal added
+        existing_urls = {item.get("url") for item in cache if item.get("url")}
+        existing_titles = {item.get("title") for item in cache if item.get("title")}
+
+        for source_item in new_items:
+            item = dict(source_item)
+            url = item.get("url")
+            title = item.get("title")
+            if (url and url in existing_urls) or (title and title in existing_titles):
+                continue
+            item["timestamp"] = time.time()
+            cache.append(item)
+            if url:
+                existing_urls.add(url)
+            if title:
+                existing_titles.add(title)
+            added += 1
+
+        cache.sort(key=lambda entry: entry.get("timestamp", 0), reverse=True)
+        return cache[:MAX_CACHE_SIZE]
+
+    _cache_store.update(update)
     return added
 
-def get_unpushed_items() -> list:
-    """Returns items that haven't been pushed yet."""
-    cache = load_cache()
-    return [item for item in cache if not item.get("pushed")]
 
-def mark_as_pushed(urls: list):
-    """Marks specific items as pushed so they aren't included in future digests."""
-    cache = load_cache()
-    for item in cache:
-        if item.get("url") in urls:
-            item["pushed"] = True
-    save_cache(cache)
+def get_unpushed_items() -> list[dict[str, Any]]:
+    return [item for item in load_cache() if not item.get("pushed")]
 
-def clear_pushed():
-    """Removes all items marked as pushed to free up space."""
-    cache = load_cache()
-    original_len = len(cache)
-    cache = [item for item in cache if not item.get("pushed")]
-    if len(cache) < original_len:
-        save_cache(cache)
-    print(f"Cleaned {original_len - len(cache)} pushed items from cache.")
 
-def is_duplicate(url: str, title: str) -> bool:
-    """Check if a URL or title already exists in the cache."""
+def mark_as_pushed(urls: list[str]) -> None:
+    url_set = set(urls)
+
+    def update(cache: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for item in cache:
+            if item.get("url") in url_set:
+                item["pushed"] = True
+        return cache
+
+    _cache_store.update(update)
+
+
+def clear_pushed() -> int:
+    removed = 0
+
+    def update(cache: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal removed
+        remaining = [item for item in cache if not item.get("pushed")]
+        removed = len(cache) - len(remaining)
+        return remaining
+
+    _cache_store.update(update)
+    logger.info("已从新闻缓存清理 %s 条已推送记录", removed)
+    return removed
+
+
+def filter_new_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter a batch with one cache read instead of one disk read per item."""
     cache = load_cache()
-    for item in cache:
-        if item.get("url") == url or item.get("title") == title:
-            return True
-    return False
+    existing_urls = {item.get("url") for item in cache if item.get("url")}
+    existing_titles = {item.get("title") for item in cache if item.get("title")}
+    return [
+        item
+        for item in items
+        if item.get("url") not in existing_urls and item.get("title") not in existing_titles
+    ]
