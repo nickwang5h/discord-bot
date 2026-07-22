@@ -44,9 +44,12 @@
 5. 包含全局的基础连通性测试命令 (`/ping`)。
 
 ### 3.2 AI 客户端层 (`core/ai_client.py`)
-采用单例模式封装 Google `genai` SDK，提供简单易用的异步接口：
-- `reload_client()`: 支持动态加载和重新初始化 API 凭证，优先读取本地设置(`settings.json`)，回退到系统环境变量。
-- `ask_ai(text, system, use_search)`: 核心请求方法，用于向 Gemini 发送提示词并获取结构化响应。支持通过 `use_search=True` 动态挂载 Google Search 工具以获取实时联网数据。
+采用统一异步接口封装多家模型服务：
+- `reload_client()`: 支持动态加载和重新初始化 Gemini API 凭证，优先读取本地设置 (`settings.json`)，回退到系统环境变量。
+- `ask_ai(text, system, use_search, fallback_offline, json_mode, raise_on_failure)`: 核心请求入口。主线路使用 Gemini；失败后依次降级到 Groq、智谱和 OpenRouter。即使 Gemini 未配置，已配置的备用服务仍可工作。定时日报使用 `raise_on_failure=True`，让全节点失败进入外层生成重试，而不是把错误提示当成日报正文发送。
+- Gemini 遇到 `429 / RESOURCE_EXHAUSTED` 时会记录全局冷却时间。冷却期内直接使用备用服务，并且不会再用“离线 Gemini”绕过冷却重复请求同一服务；只有 Search 发生非限流错误时才尝试一次 Gemini 离线模式。
+- 各提供商的成功响应会附带内部模型标记，交由 Embed 层提取为 `Powered by ...` 页脚；标记不会出现在正文中。
+- OpenRouter 免费节点列表会根据实时 API 可用性维护。当前顺序为 `nvidia/nemotron-3-super-120b-a12b:free`、`google/gemma-4-31b-it:free`、`openai/gpt-oss-20b:free`、`nvidia/nemotron-3-ultra-550b-a55b:free`；JSON 模式会跳过不支持 `response_format` 的节点。
 
 ### 3.3 数据持久层 (`core/settings.py`)
 提供轻量级的本地存储方案：
@@ -54,7 +57,9 @@
 - 提供了 `get_setting` 和 `set_setting` 方法，用于动态管理应用级或用户级的偏好设置（如自定义的 API Key, 默认调用的 AI 模型名称等）。
 
 ### 3.4 视图构建层 (`core/utils.py`)
-- 提供 `create_ai_embed` 工具，用于将 AI 文本输出包装成 Discord Embed 格式，使得 UI 更加美观，同时自动处理 Discord 限制的 4096 字符截断问题。
+- `create_ai_embed` 将 AI 文本包装成 Discord Embed，提取模型页脚并处理 4096 字符限制。
+- Discord 不渲染 Markdown 表格，因此 `normalize_markdown_tables` 会在发送前把模型偶发生成的表格确定性转换为项目符号列表；代码块中的表格文本保持不变。
+- `with_retry` 只用于可安全重复执行的数据抓取与 AI 生成阶段。日报发送不放在重试闭包中，以免 Discord 已接收消息但客户端收到超时、或发送后缓存更新失败时重复推送。
 
 ## 4. 业务模块层设计 (Cogs Layer)
 
@@ -75,6 +80,8 @@
    - `news_digest.py`：利用 RSS 爬虫技术 (`feedparser`) 从多个高质量且中立的新闻源 (BBC World, CBC Top Stories, WSJ Markets) 并发抓取过去24小时内的国际、加拿大和金融新闻，交由离线大模型严格按照板块进行总结，保证了极高的新闻密度和真实性。
    - `advanced_news.py`：【实验性】高级私人精读简报。解耦了抓取和推送，包含两个子任务。`hourly_fetch` 每小时调用 `data_ingester.py` 抓取多源数据并由大模型进行防信息茧房打分，缓存在 `news_cache.py` 中；`scheduled_digest` 定期汇总高分缓存数据由模型生成最终的精美排版，推送后自动清理缓存以控制存储空间。
    - `daily_reading.py`：每天早上 7:30 自动生成并推送 3 种不同风格的英文阅读材料（AI 生成实用场景对话、真实 RSS 外刊精读、TED 金句赏析），帮助社区成员培养语感。
+
+所有日报 Cog 均使用进程内异步锁防止定时任务与管理员手动测试并发执行。日报流程统一拆成“抓取/生成（可重试）→ Discord 发送（单次）→ 成功后状态更新”，从而保证单次任务至多推送一份报告。
 
 ## 5. 数据流向与工作流程 (Data Flow)
 
@@ -117,6 +124,8 @@
    - **尝试**：在进入智谱或 OpenRouter 之前，我们引入了 Groq 的 `llama-3.3-70b-versatile` 作为一级中间缓冲。由于 Groq 依托其特制的 LPU 架构，推理速度极快（数百 Tokens/秒），非常适合弥补 Gemini 失败时的实时交互体验。
    - **最终决策**：在 `core/ai_client.py` 中实现了 Tier 2.2 降级逻辑。
 
+   当前 Groq 节点顺序为 `qwen/qwen3.6-27b`、`openai/gpt-oss-120b`、`llama-3.3-70b-versatile`。日报提示词明确禁止表格，Embed 层还会把未遵循指令的 Markdown 表格转换为项目符号，避免不同模型的格式偏差直接暴露给 Discord 用户。
+
 4. **智谱 AI (GLM-4.7-Flash) 中文层兜底**
    - **尝试**：为了在 Groq 和终极兜底 OpenRouter 之间增加一层更稳定、生成质量更高的中文原生大模型缓冲，我们引入了智谱 AI 的免费模型 `glm-4.7-flash`。
    - **最终决策**：在 `core/ai_client.py` 中实现了 Tier 2.5 降级逻辑。如果 Groq 也失败，则退化到智谱 AI，最后退化到 OpenRouter 的免费节点池。维持了“零成本”原则。
@@ -126,3 +135,5 @@
 1. **测试与临时文件存放**：
    - 所有一次性测试脚本、临时生成的验证文件、数据转储等必须放置在 `scratch/` 目录下。
    - 严禁将测试脚本（如 `test_xxx.py`）随意散落在项目主目录，以免造成根目录混乱和意外提交。
+2. **核心回归测试**：
+   - `scratch/test_regressions.py` 覆盖 Gemini cooldown、无 Gemini 时备用服务降级、Markdown 表格转换，以及日报“生成重试但只发送一次”的语义。

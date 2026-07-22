@@ -14,6 +14,7 @@ TZ = zoneinfo.ZoneInfo("America/Toronto")
 class AdvancedNews(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._digest_delivery_lock = asyncio.Lock()
         self.hourly_fetch.start()
         self.scheduled_digest.start()
 
@@ -136,7 +137,7 @@ class AdvancedNews(commands.Cog):
                 if clean_resp:
                     print(f"[Advanced News] 提取后尝试解析的文本片段: {clean_resp[:800]}")
 
-    async def _process_scheduled_digest(self, channel, time_name):
+    async def _build_scheduled_digest(self, time_name):
         print(f"[Advanced News] 正在生成 {time_name} 精读简报...")
         
         unpushed = news_cache.get_unpushed_items()
@@ -188,9 +189,16 @@ class AdvancedNews(commands.Cog):
             f"4. 正确的单条格式范例：\n"
             f"   - **[新闻的原始标题](URL)**：这里是一句直击要害的极简摘要。\n"
             f"5. 在最开头写一句简短的主编导语，一语道破这批资讯的核心脉络。\n"
+            f"6. 每条新闻必须以 `- ` 开头。绝对禁止使用 Markdown 或 HTML 表格。\n"
+            f"7. 只输出一份完整简报，禁止重复板块、重复标题或在后面重写第二版。\n"
         )
         
-        digest = await ai_client.ask_ai(prompt_text, system=system_prompt, use_search=False)
+        digest = await ai_client.ask_ai(
+            prompt_text,
+            system=system_prompt,
+            use_search=False,
+            raise_on_failure=True,
+        )
         
         embed = create_ai_embed(
             title=f"💎 高级精读简报 ({time_name}特刊)",
@@ -198,12 +206,29 @@ class AdvancedNews(commands.Cog):
             color=discord.Color.purple()
         )
         
-        await channel.send(embed=embed)
-        
-        # Mark as pushed and clear
         pushed_urls = [item.get("url") for item in selected_items]
-        news_cache.mark_as_pushed(pushed_urls)
-        news_cache.clear_pushed()
+        return embed, pushed_urls
+
+    async def _run_scheduled_digest(self, channel, time_name):
+        if self._digest_delivery_lock.locked():
+            print(f"[Advanced News] {time_name}精读简报已有任务执行中，跳过重复触发。")
+            return
+
+        async with self._digest_delivery_lock:
+            # 只重试数据准备和 AI 生成，避免发送成功后因后处理异常而重发。
+            result = await with_retry(
+                f"高级精读简报生成 ({time_name})",
+                lambda: self._build_scheduled_digest(time_name),
+            )
+            if result is None:
+                return
+
+            embed, pushed_urls = result
+            await channel.send(embed=embed)
+
+            # 发送成功后再更新缓存；此处失败也不会触发 Discord 重发。
+            news_cache.mark_as_pushed(pushed_urls)
+            news_cache.clear_pushed()
 
     @tasks.loop(minutes=60)
     async def hourly_fetch(self):
@@ -233,7 +258,7 @@ class AdvancedNews(commands.Cog):
             return
             
         try:
-            await with_retry(f"高级精读简报 ({time_name})", lambda: self._process_scheduled_digest(channel, time_name))
+            await self._run_scheduled_digest(channel, time_name)
         except Exception as e:
             print(f"Scheduled digest failed: {e}")
 
@@ -253,7 +278,7 @@ class AdvancedNews(commands.Cog):
     async def test_scheduled_digest_cmd(self, interaction: discord.Interaction):
         await interaction.response.send_message("正在生成精读简报，请稍等...", ephemeral=True)
         channel = interaction.channel
-        asyncio.create_task(self._process_scheduled_digest(channel, "测试"))
+        asyncio.create_task(self._run_scheduled_digest(channel, "测试"))
 
 async def setup(bot):
     await bot.add_cog(AdvancedNews(bot))

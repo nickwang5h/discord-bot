@@ -5,29 +5,37 @@ import discord
 import asyncio
 import aiohttp
 from core import settings, ai_client
-from core.utils import create_ai_embed
+from core.utils import create_ai_embed, with_retry
 
 TZ = zoneinfo.ZoneInfo("America/Toronto")
 
 class AIDaily(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._delivery_lock = asyncio.Lock()
         self.ai_news_daily.start()
 
     def cog_unload(self):
         self.ai_news_daily.cancel()
 
-    async def _execute_daily(self, channel):
-        async with aiohttp.ClientSession() as session:
+    async def _build_daily_embed(self):
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             # 1. 获取 HN Top 50 的 ID
             async with session.get("https://hacker-news.firebaseio.com/v0/topstories.json") as response:
+                response.raise_for_status()
                 story_ids = await response.json()
                 story_ids = story_ids[:50]
             
             # 2. 并发获取文章详情
             async def fetch_story(story_id):
-                async with session.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json") as res:
-                    return await res.json()
+                try:
+                    async with session.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json") as res:
+                        res.raise_for_status()
+                        return await res.json()
+                except Exception as error:
+                    print(f"抓取 HN 条目 {story_id} 失败: {error}")
+                    return None
             
             tasks_list = [fetch_story(sid) for sid in story_ids]
             stories = await asyncio.gather(*tasks_list)
@@ -50,10 +58,16 @@ class AIDaily(commands.Cog):
             "2. 【🤖 开发者 AI 动态】：从列表中，重点筛选出与 AI 开发相关的干货（最多 10 条），例如：大模型发布、开源 AI 项目、机器学习工具更新等。\n\n"
             "重要要求：\n"
             "1. 每条新闻必须严格保留其对应的原始 URL 链接。\n"
-            "2. 请严格使用 Markdown 的链接语法，例如：`- [中文翻译标题](URL): 一句话简介`。"
+            "2. 每条内容必须以 `- ` 开头，严格使用 Markdown 链接语法，例如：`- [中文翻译标题](URL): 一句话简介`。\n"
+            "3. 绝对禁止使用 Markdown 表格，也不要使用 HTML 表格；只能使用标题和项目符号列表。\n"
+            "4. 只输出一份完整简报，禁止重复板块、重复标题或在后面重写第二版。"
         )
         
-        digest = await ai_client.ask_ai(raw_text, system=system_prompt)
+        digest = await ai_client.ask_ai(
+            raw_text,
+            system=system_prompt,
+            raise_on_failure=True,
+        )
         
         embed = create_ai_embed(
             title="🤖 AI 前沿工具快报 (每日更新) 🚀",
@@ -61,7 +75,17 @@ class AIDaily(commands.Cog):
             color=discord.Color.brand_green()
         )
         
-        await channel.send(embed=embed)
+        return embed
+
+    async def _run_daily(self, channel):
+        if self._delivery_lock.locked():
+            print("[AI 资讯日报] 已有任务执行中，跳过重复触发。")
+            return
+
+        async with self._delivery_lock:
+            # 仅重试抓取和生成；Discord 发送只执行一次，避免超时后的重复报告。
+            embed = await with_retry("AI 资讯日报生成", self._build_daily_embed)
+            await channel.send(embed=embed)
 
     @tasks.loop(time=datetime.time(hour=8, minute=15, tzinfo=TZ))
     async def ai_news_daily(self):
@@ -76,9 +100,8 @@ class AIDaily(commands.Cog):
             print(f"找不到配置的频道 ID: {channel_id}")
             return
             
-        from core.utils import with_retry
         try:
-            await with_retry("AI 资讯日报", lambda: self._execute_daily(channel))
+            await self._run_daily(channel)
         except Exception:
             pass # 错误已在 with_retry 中被记录
 

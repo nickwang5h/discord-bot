@@ -4,19 +4,20 @@ from discord.ext import commands, tasks
 import discord
 import asyncio
 from core import settings, ai_client
-from core.utils import create_ai_embed
+from core.utils import create_ai_embed, with_retry
 
 TZ = zoneinfo.ZoneInfo("America/Toronto")
 
 class NewsDigest(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._delivery_lock = asyncio.Lock()
         self.daily.start()
 
     def cog_unload(self):
         self.daily.cancel()
 
-    async def _execute_news_digest(self, channel, time_name, greeting):
+    async def _build_news_digest(self, time_name, greeting):
         print("正在从高质量新闻源抓取新闻...")
         import feedparser
         
@@ -62,6 +63,9 @@ class NewsDigest(commands.Cog):
         
         for items in results:
             news_items.extend(items)
+
+        if not news_items:
+            raise RuntimeError("所有新闻源均未返回可用条目")
             
         raw_text = f"这是今天从各高质量信息源抓取的新闻列表：\n" + "\n".join(news_items) + f"\n\n请严格基于这些新闻为我生成今天的{time_name}新闻简报。"
         
@@ -75,10 +79,17 @@ class NewsDigest(commands.Cog):
             "1. 每个板块精选出 5 到 7 条最具价值的头条新闻。对于【金融市场】板块，列表中包含了多家不同媒体的交叉报道，请你综合比对去重，提取出最有共识的市场大事件（例如多家媒体同时报道的暴跌或收购）。\n"
             "2. 每条新闻必须附带来源 URL，并严格使用 Markdown 语法：`- [新闻极简标题](URL): 一句话新闻摘要`。\n"
             "3. 冒号后面的「一句话新闻摘要」要求信息量大、有深度，说明这起事件的影响或核心看点（类似 Hacker News 的硬核摘要风格），不要只重复标题。\n"
+            "4. 每条新闻必须以 `- ` 开头。绝对禁止使用 Markdown 或 HTML 表格，只能使用板块标题和项目符号列表。\n"
+            "5. 只输出一份完整简报，禁止重复板块、重复标题或在后面重写第二版。\n"
             "注意：总字数必须控制以适应 Discord 消息长度限制。"
         )
         
-        digest = await ai_client.ask_ai(raw_text, system=system_prompt, use_search=False)
+        digest = await ai_client.ask_ai(
+            raw_text,
+            system=system_prompt,
+            use_search=False,
+            raise_on_failure=True,
+        )
         
         embed = create_ai_embed(
             title=greeting,
@@ -86,7 +97,20 @@ class NewsDigest(commands.Cog):
             color=discord.Color.gold()
         )
         
-        await channel.send(embed=embed)
+        return embed
+
+    async def _run_news_digest(self, channel, time_name, greeting):
+        if self._delivery_lock.locked():
+            print(f"[{time_name}新闻推送] 已有任务执行中，跳过重复触发。")
+            return
+
+        async with self._delivery_lock:
+            # 抓取/生成可安全重试；发送本身不重试，保证单次任务至多推送一次。
+            embed = await with_retry(
+                f"{time_name}新闻生成",
+                lambda: self._build_news_digest(time_name, greeting),
+            )
+            await channel.send(embed=embed)
 
     @tasks.loop(time=[
         datetime.time(hour=8, minute=45, tzinfo=TZ),
@@ -109,9 +133,8 @@ class NewsDigest(commands.Cog):
             print(f"找不到配置的频道 ID: {channel_id}")
             return
             
-        from core.utils import with_retry
         try:
-            await with_retry(f"{time_name}新闻推送", lambda: self._execute_news_digest(channel, time_name, greeting))
+            await self._run_news_digest(channel, time_name, greeting)
         except Exception:
             pass # 错误已在 with_retry 中被记录
         

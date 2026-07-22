@@ -1,5 +1,5 @@
 import asyncio
-import os
+import time
 from unittest.mock import patch
 from core import ai_client
 from dotenv import load_dotenv
@@ -20,24 +20,14 @@ async def run_tests():
     except Exception as e:
         print("❌ FAILED:", repr(e))
 
-    # 2. Test OpenRouter fallback on Gemini Crash
-    print("\n[Test 2] OpenRouter Fallback Logic (Simulating Gemini failure)")
+    # 2. Test provider fallback while Gemini is cooling down
+    print("\n[Test 2] Provider Fallback Logic (Simulating Gemini cooldown)")
     try:
-        # Patch the _try_gemini to throw an exception
-        original_try_gemini = ai_client._try_gemini
-        
-        async def fake_try_gemini(with_search):
-            raise Exception("429 RESOURCE_EXHAUSTED Fake Error")
-            
-        ai_client._try_gemini = fake_try_gemini
-        ans2 = await ai_client.ask_ai("This should be answered by OpenRouter.", use_search=False)
+        with patch.object(ai_client, "gemini_cooldown_until", time.time() + 60):
+            ans2 = await ai_client.ask_ai("This should be answered by a fallback provider.", use_search=False)
         print("✅ SUCCESS (Fallback triggered). Output:", repr(ans2))
-        
-        # Restore
-        ai_client._try_gemini = original_try_gemini
     except Exception as e:
         print("❌ FAILED:", repr(e))
-        ai_client._try_gemini = original_try_gemini
 
     # 3. Test RSS News Digest Logic (Simulating news_digest.py)
     print("\n[Test 3] RSS News Fetching & Summarization (Simulating news_digest.py)")
