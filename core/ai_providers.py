@@ -1,3 +1,4 @@
+import asyncio
 import re
 from dataclasses import dataclass
 
@@ -61,13 +62,19 @@ async def request_openai_compatible(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     failures: list[str] = []
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession() as session:
         for spec in models:
             if json_mode and not spec.supports_json:
                 continue
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                failures.append(f"provider 总超时 ({timeout_seconds:g}s)")
+                break
 
             payload: dict[str, object] = {
                 "model": spec.model_id,
@@ -78,10 +85,18 @@ async def request_openai_compatible(
                 payload["response_format"] = {"type": "json_object"}
 
             try:
-                async with session.post(endpoint, headers=headers, json=payload) as response:
+                request_timeout = aiohttp.ClientTimeout(total=remaining)
+                async with session.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=request_timeout,
+                ) as response:
                     if response.status != 200:
                         body = (await response.text())[:300].replace("\n", " ")
                         failures.append(f"{spec.model_id}: HTTP {response.status} {body}")
+                        if response.status == 413:
+                            break
                         continue
 
                     data = await response.json()

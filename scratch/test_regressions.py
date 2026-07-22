@@ -4,7 +4,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from cogs.advanced_news import AdvancedNews
+from cogs.advanced_news import (
+    ANALYSIS_BATCH_SIZE,
+    ANALYSIS_MAX_OUTPUT_TOKENS,
+    AdvancedNews,
+    _normalize_scored_items,
+)
 from cogs.ai_daily import AIDaily
 from core import ai_client
 from core.ai_providers import AIResult
@@ -102,6 +107,70 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ai_client.AIServiceUnavailable):
                 await ai_client.ask_ai("hello", raise_on_failure=True)
+
+
+class AdvancedNewsAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    def test_model_output_is_validated_and_source_fields_are_restored(self):
+        source = {
+            "title": "Original title",
+            "url": "https://example.com/story",
+            "source": "Tech",
+        }
+        candidate = {
+            "title": "Invented title",
+            "url": source["url"],
+            "summary": "Useful summary",
+            "topic": "AI",
+            "connection_reason": "Connects AI and developer tooling",
+            "relevance_score": 1.5,
+            "novelty_score": -0.2,
+            "quality_score": 0.9,
+            "llm_interestingness": 0.8,
+            "cross_domain_bridge": 0.7,
+        }
+
+        result = _normalize_scored_items([candidate], [source])
+
+        self.assertEqual(result[0]["title"], "Original title")
+        self.assertEqual(result[0]["source"], "Tech")
+        self.assertEqual(result[0]["relevance_score"], 1.0)
+        self.assertEqual(result[0]["novelty_score"], 0.0)
+        self.assertLessEqual(result[0]["discovery_score"], 1.0)
+
+    async def test_provider_outage_stops_remaining_analysis_batches(self):
+        cog = object.__new__(AdvancedNews)
+        cog._fetch_lock = asyncio.Lock()
+        items = [
+            {
+                "title": f"Story {index}",
+                "url": f"https://example.com/{index}",
+                "source": "Tech",
+                "content": "content",
+            }
+            for index in range(ANALYSIS_BATCH_SIZE + 1)
+        ]
+        generate = AsyncMock(side_effect=ai_client.AIServiceUnavailable("offline"))
+
+        with (
+            patch("cogs.advanced_news.data_ingester.fetch_all_sources", AsyncMock(return_value=items)),
+            patch("cogs.advanced_news.news_cache.filter_new_items", return_value=items),
+            patch("cogs.advanced_news.ai_client.generate_ai", generate),
+        ):
+            await cog._process_hourly_fetch()
+
+        generate.assert_awaited_once()
+        self.assertEqual(generate.await_args.kwargs["max_output_tokens"], ANALYSIS_MAX_OUTPUT_TOKENS)
+
+    async def test_interval_loop_skips_immediate_startup_fetch(self):
+        cog = object.__new__(AdvancedNews)
+        cog._skip_initial_hourly_fetch = True
+        cog._process_hourly_fetch = AsyncMock()
+
+        await AdvancedNews.hourly_fetch.coro(cog)
+        cog._process_hourly_fetch.assert_not_awaited()
+
+        await AdvancedNews.hourly_fetch.coro(cog)
+        cog._process_hourly_fetch.assert_awaited_once()
 
 
 class DigestDeliveryTests(unittest.IsolatedAsyncioTestCase):

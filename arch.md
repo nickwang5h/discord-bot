@@ -67,7 +67,7 @@ Groq、智谱和 OpenRouter 都使用 OpenAI-compatible Chat Completions 协议�
 - 模型顺序降级；
 - JSON mode；
 - 最大输出 token；
-- 超时、HTTP 错误和响应结构验证；
+- provider 级总超时、HTTP 错误和响应结构验证；
 - 清除 `<think>` 推理块。
 
 `ask_ai()` 保留原有字符串 API，使用内部 HTML comment 携带模型 attribution，保证旧 Cog 和测试脚本兼容。Embed 层会移除 comment 并生成 `Powered by ...` footer。
@@ -103,7 +103,9 @@ Gemini 出现 `429` 或 `RESOURCE_EXHAUSTED` 时记录服务级 cooldown。冷�
 
 普通交互命令在所有 provider 失败时得到用户友好的错误文本；定时内容使用 `raise_on_failure=True`，让失败进入任务重试，不会把错误提示作为日报正文推送。
 
-所有请求默认限制 4096 个输出 token。高级新闻批量 JSON 打分允许 8192；Discord 最终正文仍限制在 4000 字符附近。
+所有请求默认限制 4096 个输出 token。高级新闻以最多 8 条一批、3000 输出 token 进行 JSON 打分，确保免费模型的 prompt 与 completion 预算不会因单次请求超过 8k；Discord 最终正文仍限制在 4000 字符附近。
+
+OpenAI-compatible provider 的超时覆盖整个候选模型池，而不是每个模型重新计时；HTTP 413 会直接终止该 provider 的模型轮询，因为相同 payload 不会因切换模型而缩小。
 
 ## 5. 定时任务事务
 
@@ -147,7 +149,9 @@ Discord channel.send（单次）
 - 高级新闻每个 RSS 最多 4 条；
 - 高级新闻在送入模型前使用一次缓存读取批量去重。
 
-高级新闻模型输出必须是 JSON，代码会校验 `news` 为数组，并仅接受原始 batch 中存在的 URL，避免模型虚构来源进入缓存。
+高级新闻的 60 分钟 interval loop 会跳过进程启动时的即时执行，避免重启触发全量补抓；手动测试命令仍可立即抓取。同一进程只允许一个抓取任务运行。若所有 AI provider 都失败，本轮立即停止，不再用剩余批次持续冲击限流节点。
+
+高级新闻 JSON 分析直接调用失败即抛异常的 `generate_ai()`，不会经过可能返回用户提示文本的兼容接口。代码会校验 `news` 为数组，只接受原始 batch 中存在的 URL，恢复原始标题/来源，将分数限制在 0-1 后再写入缓存。启动时会移除缺少当前评分字段的旧 schema 缓存；这些记录无法参与现有筛选，且会阻止相同 URL 按新规则重新打分。
 
 ## 7. 链接总结
 
@@ -211,9 +215,9 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 
 测试脚本统一放在 `scratch/`：
 
-- `test_core_services.py`：原子存储、密钥隔离、缓存去重、RSS UTC、退避、URL 安全、AIResult。
+- `test_core_services.py`：原子存储、密钥隔离、缓存去重/迁移、RSS UTC、退避、URL 安全、AIResult。
 - `test_extensions.py`：所有 Cog 的加载/卸载。
-- `test_regressions.py`：Gemini cooldown、provider fallback、日报 single-flight/单次发送、表格转换。
+- `test_regressions.py`：Gemini cooldown、provider fallback、高级新闻批次失败/启动行为、日报 single-flight/单次发送、表格转换。
 - 其他 `test_*.py`：按 provider 或数据源进行人工集成测试。
 
 ## 12. 当前限制

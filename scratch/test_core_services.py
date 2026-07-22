@@ -7,7 +7,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from core import news_cache, settings
-from core.ai_providers import AIResult, clean_model_content
+from core.ai_providers import (
+    AIResult,
+    ModelSpec,
+    ProviderError,
+    clean_model_content,
+    request_openai_compatible,
+)
 from core.feeds import FeedSource, _parse_feed
 from core.jobs import RetryPolicy, retry_async
 from core.storage import JsonStore
@@ -71,6 +77,33 @@ class JsonStoreTests(unittest.TestCase):
                 self.assertEqual(added, 1)
                 self.assertEqual(len(news_cache.load_cache()), 1)
 
+    def test_news_cache_prunes_legacy_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache_store = JsonStore(Path(directory) / "news.json", list)
+            current = {
+                "title": "Current",
+                "url": "https://example.com/current",
+                "relevance_score": 0.8,
+                "novelty_score": 0.7,
+                "quality_score": 0.9,
+                "llm_interestingness": 0.6,
+                "cross_domain_bridge": 0.5,
+                "discovery_score": 0.72,
+            }
+            legacy = {
+                "title": "Legacy",
+                "url": "https://example.com/legacy",
+                "theme_score": 8,
+                "serendipity_score": 7,
+            }
+            cache_store.write([legacy, current])
+
+            with patch.object(news_cache, "_cache_store", cache_store):
+                removed = news_cache.prune_legacy_items()
+
+                self.assertEqual(removed, 1)
+                self.assertEqual(news_cache.load_cache(), [current])
+
 
 class FeedParsingTests(unittest.TestCase):
     def test_feed_timestamp_is_interpreted_as_utc(self):
@@ -120,6 +153,52 @@ class AIProviderValueTests(unittest.TestCase):
         self.assertEqual(result.text, "answer")
         self.assertEqual(result.attribution, "Groq (model)")
         self.assertIn("<!--MODEL:Groq (model)-->", result.as_legacy_text())
+
+
+class AIProviderTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_payload_too_large_does_not_retry_same_payload_on_other_models(self):
+        class FakeResponse:
+            status = 413
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def text(self):
+                return "request too large"
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def post(self, *_args, **_kwargs):
+                self.calls += 1
+                return FakeResponse()
+
+        session = FakeSession()
+        with patch("core.ai_providers.aiohttp.ClientSession", return_value=session):
+            with self.assertRaises(ProviderError):
+                await request_openai_compatible(
+                    provider="test",
+                    endpoint="https://example.com/chat",
+                    api_key="secret",
+                    models=[ModelSpec("one"), ModelSpec("two")],
+                    text="hello",
+                    system="",
+                    json_mode=False,
+                    timeout_seconds=10,
+                    max_output_tokens=100,
+                )
+
+        self.assertEqual(session.calls, 1)
 
 
 class UrlSafetyTests(unittest.IsolatedAsyncioTestCase):

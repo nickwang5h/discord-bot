@@ -1,10 +1,11 @@
+import asyncio
 import datetime
 import json
 import logging
 import re
-import asyncio
-from discord.ext import commands, tasks
+
 import discord
+from discord.ext import commands, tasks
 
 from config import TZ
 from core import settings, ai_client, news_cache, data_ingester
@@ -13,10 +14,77 @@ from core.utils import create_ai_embed
 
 logger = logging.getLogger(__name__)
 
+ANALYSIS_BATCH_SIZE = 8
+ANALYSIS_MAX_OUTPUT_TOKENS = 3000
+SCORE_FIELDS = (
+    "relevance_score",
+    "novelty_score",
+    "quality_score",
+    "llm_interestingness",
+    "cross_domain_bridge",
+)
+
+
+def _normalize_scored_items(
+    scored_items: list[object],
+    source_items: list[dict],
+) -> list[dict]:
+    """Validate model output and restore source-owned fields before caching."""
+    sources_by_url = {item.get("url"): item for item in source_items if item.get("url")}
+    normalized: list[dict] = []
+
+    for candidate in scored_items:
+        if not isinstance(candidate, dict):
+            continue
+        url = candidate.get("url")
+        source = sources_by_url.get(url)
+        if source is None:
+            continue
+
+        try:
+            scores = {
+                field: min(1.0, max(0.0, float(candidate[field])))
+                for field in SCORE_FIELDS
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        summary = str(candidate.get("summary") or "").strip()
+        topic = str(candidate.get("topic") or "").strip()
+        connection_reason = str(candidate.get("connection_reason") or "").strip()
+        if not summary or not topic or not connection_reason:
+            continue
+
+        normalized_item = {
+            "title": source.get("title") or str(candidate.get("title") or "").strip(),
+            "url": url,
+            "source": source.get("source"),
+            "summary": summary,
+            "topic": topic,
+            "connection_reason": connection_reason,
+            **scores,
+        }
+        normalized_item["discovery_score"] = (
+            (0.25 * scores["relevance_score"])
+            + (0.20 * scores["novelty_score"])
+            + (0.20 * scores["quality_score"])
+            + (0.20 * scores["llm_interestingness"])
+            + (0.15 * scores["cross_domain_bridge"])
+        )
+        normalized.append(normalized_item)
+
+    return normalized
+
+
 class AdvancedNews(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._fetch_lock = asyncio.Lock()
         self._digest_delivery_lock = asyncio.Lock()
+        self._skip_initial_hourly_fetch = True
+        removed = news_cache.prune_legacy_items()
+        if removed:
+            logger.info("[Advanced News] 已清理 %s 条旧版或无效缓存记录", removed)
         self.hourly_fetch.start()
         self.scheduled_digest.start()
 
@@ -61,6 +129,14 @@ class AdvancedNews(commands.Cog):
         return text
 
     async def _process_hourly_fetch(self):
+        if self._fetch_lock.locked():
+            logger.info("[Advanced News] 已有抓取任务运行，本次触发跳过")
+            return
+
+        async with self._fetch_lock:
+            await self._process_hourly_fetch_locked()
+
+    async def _process_hourly_fetch_locked(self):
         logger.info("[Advanced News] 开始每小时的数据抓取")
         raw_items = await data_ingester.fetch_all_sources()
         
@@ -73,10 +149,9 @@ class AdvancedNews(commands.Cog):
             
         logger.info("[Advanced News] 发现 %s 条新资讯，正在交由 AI 分析", len(new_items))
         
-        # We process in batches to avoid context limit if there are too many
-        batch_size = 15
-        for i in range(0, len(new_items), batch_size):
-            batch = new_items[i:i+batch_size]
+        # Small batches keep prompt + completion below free-provider TPM limits.
+        for i in range(0, len(new_items), ANALYSIS_BATCH_SIZE):
+            batch = new_items[i:i + ANALYSIS_BATCH_SIZE]
             
             prompt_text = "以下是新抓取的资讯：\n\n"
             for idx, item in enumerate(batch):
@@ -107,43 +182,32 @@ class AdvancedNews(commands.Cog):
             response = None
             clean_resp = None
             try:
-                response = await ai_client.ask_ai(
+                result = await ai_client.generate_ai(
                     prompt_text,
                     system=system_prompt,
                     use_search=False,
                     json_mode=True,
-                    max_output_tokens=8192,
+                    max_output_tokens=ANALYSIS_MAX_OUTPUT_TOKENS,
                 )
+                response = result.text
                 clean_resp = self._clean_json_response(response)
                 parsed = json.loads(clean_resp)
                 scored_items = parsed.get("news", parsed) if isinstance(parsed, dict) else parsed
 
                 if not isinstance(scored_items, list):
                     raise ValueError("模型 JSON 中的 news 必须是数组")
-                allowed_urls = {item["url"] for item in batch}
-                scored_items = [
-                    item
-                    for item in scored_items
-                    if isinstance(item, dict) and item.get("url") in allowed_urls
-                ]
+                scored_items = _normalize_scored_items(scored_items, batch)
 
-                for item in scored_items:
-                    try:
-                        rel = float(item.get("relevance_score", 0.0))
-                        nov = float(item.get("novelty_score", 0.0))
-                        qual = float(item.get("quality_score", 0.0))
-                        inte = float(item.get("llm_interestingness", 0.0))
-                        cross = float(item.get("cross_domain_bridge", 0.0))
-                        
-                        discovery_score = (0.25 * rel) + (0.20 * nov) + (0.20 * qual) + (0.20 * inte) + (0.15 * cross)
-                        item["discovery_score"] = discovery_score
-                    except (ValueError, TypeError):
-                        item["discovery_score"] = 0.0
-
-                
                 # Append to cache
                 added = news_cache.add_items(scored_items)
                 logger.info("[Advanced News] 批次处理完成，成功存入 %s 条记录", added)
+            except ai_client.AIServiceUnavailable as error:
+                logger.error(
+                    "[Advanced News] AI 节点全部不可用，停止剩余 %s 个批次: %s",
+                    (len(new_items) - i + ANALYSIS_BATCH_SIZE - 1) // ANALYSIS_BATCH_SIZE,
+                    error,
+                )
+                break
             except Exception as e:
                 logger.exception("[Advanced News] AI 分析或 JSON 解析失败: %s", e)
                 if response:
@@ -243,6 +307,10 @@ class AdvancedNews(commands.Cog):
 
     @tasks.loop(minutes=60)
     async def hourly_fetch(self):
+        if self._skip_initial_hourly_fetch:
+            self._skip_initial_hourly_fetch = False
+            logger.info("[Advanced News] 跳过启动时即时补抓，首次自动抓取将在一小时后执行")
+            return
         await self._process_hourly_fetch()
 
     @hourly_fetch.before_loop
