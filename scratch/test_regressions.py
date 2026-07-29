@@ -52,6 +52,12 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         ai_client.gemini_cooldown_until = 0.0
 
+    def test_qwen_requests_disable_reasoning_output(self):
+        qwen = next(spec for spec in ai_client.GROQ_MODELS if spec.model_id == "qwen/qwen3.6-27b")
+
+        self.assertEqual(qwen.reasoning_effort, "none")
+        self.assertEqual(qwen.reasoning_format, "hidden")
+
     async def test_missing_gemini_uses_configured_fallback(self):
         groq = AsyncMock(return_value=AIResult("fallback", "Groq", "test"))
         with (

@@ -97,6 +97,8 @@ OpenRouter 当前内置节点：
 
 模型目录在 2026-07-22 通过官方 API 实时验证。`scripts/healthcheck.py --live` 会重新验证列表，避免长期依赖文档中的静态状态。JSON mode 会跳过不支持 `response_format` 的节点。
 
+Qwen 3.6 在本项目中使用非思考模式，并要求 Groq 只返回最终答案，避免推理过程占满 completion token 预算。OpenAI-compatible 接口若返回 `finish_reason=length`，会将该候选视为失败并切换到下一个模型，不会把不完整正文交给 Discord 或 JSON 解析器。
+
 ### 4.3 Cooldown 与失败语义
 
 Gemini 出现 `429` 或 `RESOURCE_EXHAUSTED` 时记录服务级 cooldown。冷却期内请求直接进入备用 provider，不再尝试同一个 Gemini offline 请求。

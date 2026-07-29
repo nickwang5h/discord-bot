@@ -13,7 +13,11 @@ from core.ai_providers import AIResult, ModelSpec, ProviderError, request_openai
 logger = logging.getLogger(__name__)
 
 GROQ_MODELS = [
-    ModelSpec("qwen/qwen3.6-27b"),
+    ModelSpec(
+        "qwen/qwen3.6-27b",
+        reasoning_effort="none",
+        reasoning_format="hidden",
+    ),
     ModelSpec("openai/gpt-oss-120b"),
     ModelSpec("llama-3.3-70b-versatile"),
 ]

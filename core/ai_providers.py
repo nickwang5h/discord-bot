@@ -13,6 +13,8 @@ class ProviderError(RuntimeError):
 class ModelSpec:
     model_id: str
     supports_json: bool = True
+    reasoning_effort: str | None = None
+    reasoning_format: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +83,10 @@ async def request_openai_compatible(
                 "messages": messages,
                 token_limit_field: max_output_tokens,
             }
+            if spec.reasoning_effort is not None:
+                payload["reasoning_effort"] = spec.reasoning_effort
+            if spec.reasoning_format is not None:
+                payload["reasoning_format"] = spec.reasoning_format
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
 
@@ -101,9 +107,14 @@ async def request_openai_compatible(
 
                     data = await response.json()
                     try:
-                        content = data["choices"][0]["message"]["content"]
+                        choice = data["choices"][0]
+                        content = choice["message"]["content"]
                     except (KeyError, IndexError, TypeError) as error:
                         failures.append(f"{spec.model_id}: 返回结构无效 ({error})")
+                        continue
+
+                    if choice.get("finish_reason") == "length":
+                        failures.append(f"{spec.model_id}: 输出达到 token 上限，结果不完整")
                         continue
 
                     try:

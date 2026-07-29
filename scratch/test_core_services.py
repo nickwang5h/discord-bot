@@ -156,6 +156,130 @@ class AIProviderValueTests(unittest.TestCase):
 
 
 class AIProviderTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_reasoning_controls_are_added_to_payload(self):
+        class FakeResponse:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def json(self):
+                return {
+                    "choices": [
+                        {
+                            "message": {"content": "complete answer"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+
+        class FakeSession:
+            def __init__(self):
+                self.payload = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def post(self, *_args, **kwargs):
+                self.payload = kwargs["json"]
+                return FakeResponse()
+
+        session = FakeSession()
+        with patch("core.ai_providers.aiohttp.ClientSession", return_value=session):
+            result = await request_openai_compatible(
+                provider="test",
+                endpoint="https://example.com/chat",
+                api_key="secret",
+                models=[
+                    ModelSpec(
+                        "reasoning-model",
+                        reasoning_effort="none",
+                        reasoning_format="hidden",
+                    )
+                ],
+                text="hello",
+                system="",
+                json_mode=False,
+                timeout_seconds=10,
+                max_output_tokens=100,
+            )
+
+        self.assertEqual(result.text, "complete answer")
+        self.assertEqual(session.payload["reasoning_effort"], "none")
+        self.assertEqual(session.payload["reasoning_format"], "hidden")
+
+    async def test_length_limited_response_falls_through_to_next_model(self):
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, data):
+                self.data = data
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def json(self):
+                return self.data
+
+        class FakeSession:
+            def __init__(self):
+                self.responses = [
+                    {
+                        "choices": [
+                            {
+                                "message": {"content": "truncated ans"},
+                                "finish_reason": "length",
+                            }
+                        ]
+                    },
+                    {
+                        "choices": [
+                            {
+                                "message": {"content": "complete answer"},
+                                "finish_reason": "stop",
+                            }
+                        ]
+                    },
+                ]
+                self.models = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def post(self, *_args, **kwargs):
+                self.models.append(kwargs["json"]["model"])
+                return FakeResponse(self.responses.pop(0))
+
+        session = FakeSession()
+        with patch("core.ai_providers.aiohttp.ClientSession", return_value=session):
+            result = await request_openai_compatible(
+                provider="test",
+                endpoint="https://example.com/chat",
+                api_key="secret",
+                models=[ModelSpec("thinking"), ModelSpec("fallback")],
+                text="hello",
+                system="",
+                json_mode=False,
+                timeout_seconds=10,
+                max_output_tokens=100,
+            )
+
+        self.assertEqual(result.text, "complete answer")
+        self.assertEqual(result.model, "fallback")
+        self.assertEqual(session.models, ["thinking", "fallback"])
+
     async def test_payload_too_large_does_not_retry_same_payload_on_other_models(self):
         class FakeResponse:
             status = 413
