@@ -29,3 +29,6 @@ Thumbs.db
 
 # Application Data
 data/
+
+# Local scratch work and integration experiments
+scratch/
