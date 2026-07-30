@@ -4,7 +4,7 @@
 
 ## 主要能力
 
-- 多模型降级：Gemini → Groq → 智谱 → OpenRouter。
+- 按能力路由：普通生成优先 Groq/Qwen，明确联网时优先 Gemini Search，并保留多节点降级。
 - 低成本新闻：RSS/Hacker News 负责事实输入，模型只负责筛选和整理。
 - 稳定日报：抓取与生成可以重试，Discord 发送至多一次；并发触发会自动跳过。
 - 格式兜底：模型生成的 Markdown 表格会自动转换为 Discord 可读的项目符号。
@@ -17,7 +17,7 @@
 ├── bot.py                    # Bot 生命周期、Cog 加载、全局错误处理
 ├── config.py                 # 项目路径、时区、日志和环境变量
 ├── core/
-│   ├── ai_client.py          # AI 降级编排与 Gemini cooldown
+│   ├── ai_client.py          # AI 能力路由、降级与 Gemini cooldown
 │   ├── ai_providers.py       # OpenAI-compatible provider 公共实现
 │   ├── feeds.py              # 带超时的统一异步 RSS 抓取
 │   ├── jobs.py               # 重试、single-flight、单次发送事务
@@ -49,11 +49,15 @@ cp .env.example .env
 
 ```env
 DISCORD_TOKEN=...
+
+# 推荐：普通生成的首选服务（Qwen 优先）
+GROQ_API_KEY=...
+
+# 可选：Gemini Search 与普通生成的最后兜底
 GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MODEL=gemini-3.6-flash
 
 # 可选备用服务
-GROQ_API_KEY=...
 ZHIPU_API_KEY=...
 OPENROUTER_API_KEY=...
 

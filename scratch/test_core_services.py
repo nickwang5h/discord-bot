@@ -156,7 +156,7 @@ class AIProviderValueTests(unittest.TestCase):
 
 
 class AIProviderTransportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_model_reasoning_controls_are_added_to_payload(self):
+    async def test_model_and_provider_controls_are_added_to_payload(self):
         class FakeResponse:
             status = 200
 
@@ -208,11 +208,13 @@ class AIProviderTransportTests(unittest.IsolatedAsyncioTestCase):
                 json_mode=False,
                 timeout_seconds=10,
                 max_output_tokens=100,
+                extra_payload={"thinking": {"type": "disabled"}},
             )
 
         self.assertEqual(result.text, "complete answer")
         self.assertEqual(session.payload["reasoning_effort"], "none")
         self.assertEqual(session.payload["reasoning_format"], "hidden")
+        self.assertEqual(session.payload["thinking"], {"type": "disabled"})
 
     async def test_length_limited_response_falls_through_to_next_model(self):
         class FakeResponse:

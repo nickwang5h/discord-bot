@@ -58,17 +58,96 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(qwen.reasoning_effort, "none")
         self.assertEqual(qwen.reasoning_format, "hidden")
 
-    async def test_missing_gemini_uses_configured_fallback(self):
-        groq = AsyncMock(return_value=AIResult("fallback", "Groq", "test"))
+    def test_model_catalog_balances_quality_cost_and_retirement_risk(self):
+        self.assertEqual(
+            [spec.model_id for spec in ai_client.GROQ_MODELS],
+            [
+                "qwen/qwen3.6-27b",
+                "openai/gpt-oss-120b",
+                "openai/gpt-oss-20b",
+            ],
+        )
+        self.assertEqual(
+            [spec.reasoning_effort for spec in ai_client.GROQ_MODELS],
+            ["none", "low", "low"],
+        )
+        self.assertEqual(
+            [spec.model_id for spec in ai_client.ZHIPU_MODELS],
+            ["glm-4.7-flash", "glm-4.5-flash"],
+        )
+        self.assertEqual(
+            [spec.model_id for spec in ai_client.OPENROUTER_MODELS],
+            [
+                "nvidia/nemotron-3-super-120b-a12b:free",
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "openai/gpt-oss-20b:free",
+                "nvidia/nemotron-nano-9b-v2:free",
+            ],
+        )
+        self.assertFalse(any(spec.model_id.startswith("google/") for spec in ai_client.OPENROUTER_MODELS))
+        self.assertEqual(ai_client.DEFAULT_GEMINI_MODEL, "gemini-3.6-flash")
+
+    async def test_basic_generation_prefers_qwen_provider_over_gemini(self):
+        gemini = AsyncMock(side_effect=AssertionError("Gemini should not be called"))
+        groq = AsyncMock(return_value=AIResult("basic", "Groq", "qwen/qwen3.6-27b"))
         with (
-            patch.object(ai_client, "model_available", False),
-            patch.object(ai_client, "client", None),
+            patch.object(ai_client, "model_available", True),
+            patch.object(ai_client, "client", object()),
+            patch.object(ai_client, "_ask_gemini", gemini),
             patch.object(ai_client, "_ask_groq", groq),
         ):
-            result = await ai_client.ask_ai("hello")
+            result = await ai_client.generate_ai("hello")
 
-        self.assertIn("fallback", result)
+        self.assertEqual(result.provider, "Groq")
+        self.assertEqual(result.model, "qwen/qwen3.6-27b")
         groq.assert_awaited_once()
+        gemini.assert_not_awaited()
+
+    async def test_basic_generation_uses_gemini_only_after_other_providers_fail(self):
+        unavailable = AsyncMock(side_effect=RuntimeError("unavailable"))
+        gemini = AsyncMock(return_value=AIResult("last resort", "Gemini", "test"))
+
+        with (
+            patch.object(ai_client, "model_available", True),
+            patch.object(ai_client, "client", object()),
+            patch.object(ai_client, "_ask_groq", unavailable),
+            patch.object(ai_client, "_ask_zhipu", unavailable),
+            patch.object(ai_client, "_ask_openrouter", unavailable),
+            patch.object(ai_client, "_ask_gemini", gemini),
+        ):
+            result = await ai_client.generate_ai("hello")
+
+        self.assertEqual(result.provider, "Gemini")
+        self.assertEqual(unavailable.await_count, 3)
+        gemini.assert_awaited_once_with(
+            "hello",
+            "用简洁中文总结要点，分条列出。",
+            with_search=False,
+            json_mode=False,
+            max_output_tokens=4096,
+        )
+
+    async def test_search_generation_still_prefers_gemini(self):
+        gemini = AsyncMock(return_value=AIResult("current", "Gemini", "test"))
+        groq = AsyncMock(side_effect=AssertionError("Groq should not be called"))
+
+        with (
+            patch.object(ai_client, "model_available", True),
+            patch.object(ai_client, "client", object()),
+            patch.object(ai_client, "_ask_gemini", gemini),
+            patch.object(ai_client, "_ask_groq", groq),
+        ):
+            result = await ai_client.generate_ai("latest", use_search=True)
+
+        self.assertEqual(result.provider, "Gemini")
+        gemini.assert_awaited_once_with(
+            "latest",
+            "用简洁中文总结要点，分条列出。",
+            with_search=True,
+            json_mode=False,
+            max_output_tokens=4096,
+        )
+        groq.assert_not_awaited()
 
     async def test_rate_limit_does_not_retry_gemini_offline(self):
         generate = AsyncMock(side_effect=Exception("429 RESOURCE_EXHAUSTED retry in 12s"))

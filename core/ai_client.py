@@ -12,21 +12,25 @@ from core.ai_providers import AIResult, ModelSpec, ProviderError, request_openai
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_MODELS = [
     ModelSpec(
         "qwen/qwen3.6-27b",
         reasoning_effort="none",
         reasoning_format="hidden",
     ),
-    ModelSpec("openai/gpt-oss-120b"),
-    ModelSpec("llama-3.3-70b-versatile"),
+    ModelSpec("openai/gpt-oss-120b", reasoning_effort="low"),
+    ModelSpec("openai/gpt-oss-20b", reasoning_effort="low"),
 ]
-ZHIPU_MODELS = [ModelSpec("glm-4.7-flash")]
+ZHIPU_MODELS = [
+    ModelSpec("glm-4.7-flash"),
+    ModelSpec("glm-4.5-flash"),
+]
 OPENROUTER_MODELS = [
     ModelSpec("nvidia/nemotron-3-super-120b-a12b:free"),
-    ModelSpec("google/gemma-4-31b-it:free"),
-    ModelSpec("openai/gpt-oss-20b:free"),
     ModelSpec("nvidia/nemotron-3-ultra-550b-a55b:free", supports_json=False),
+    ModelSpec("openai/gpt-oss-20b:free"),
+    ModelSpec("nvidia/nemotron-nano-9b-v2:free"),
 ]
 
 client: genai.Client | None = None
@@ -59,7 +63,7 @@ def reload_client() -> bool:
 
 
 def _gemini_model() -> str:
-    return settings.get_setting("GEMINI_MODEL") or get_env("GEMINI_MODEL", "gemini-3.5-flash")
+    return settings.get_setting("GEMINI_MODEL") or get_env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
 
 
 def _record_gemini_cooldown(error: Exception) -> bool:
@@ -159,6 +163,7 @@ async def _ask_zhipu(
         json_mode=json_mode,
         timeout_seconds=25,
         max_output_tokens=max_output_tokens,
+        extra_payload={"thinking": {"type": "disabled"}},
     )
 
 
@@ -190,6 +195,33 @@ async def _ask_openrouter(
     )
 
 
+async def _ask_compatible_providers(
+    text: str,
+    system: str,
+    *,
+    json_mode: bool,
+    max_output_tokens: int,
+    errors: list[str],
+) -> AIResult | None:
+    providers = (
+        ("Groq", _ask_groq),
+        ("Zhipu", _ask_zhipu),
+        ("OpenRouter", _ask_openrouter),
+    )
+    for provider_name, provider in providers:
+        try:
+            return await provider(
+                text,
+                system,
+                json_mode=json_mode,
+                max_output_tokens=max_output_tokens,
+            )
+        except Exception as error:
+            errors.append(f"{provider_name}: {error}")
+            logger.warning("%s 请求失败: %s", provider_name, error)
+    return None
+
+
 async def generate_ai(
     text: str,
     system: str = "用简洁中文总结要点，分条列出。",
@@ -198,9 +230,20 @@ async def generate_ai(
     json_mode: bool = False,
     max_output_tokens: int = 4096,
 ) -> AIResult:
-    """Generate one response through Gemini -> Groq -> Zhipu -> OpenRouter."""
+    """Route basic generation to Qwen first and reserve Gemini priority for Search."""
     errors: list[str] = []
     in_cooldown = time.time() < gemini_cooldown_until
+
+    if not use_search:
+        compatible_result = await _ask_compatible_providers(
+            text,
+            system,
+            json_mode=json_mode,
+            max_output_tokens=max_output_tokens,
+            errors=errors,
+        )
+        if compatible_result is not None:
+            return compatible_result
 
     if model_available and client is not None and not in_cooldown:
         try:
@@ -237,22 +280,16 @@ async def generate_ai(
         if use_search and not fallback_offline:
             raise AIServiceUnavailable(f"Gemini {reason}，且禁止离线降级")
 
-    providers = (
-        ("Groq", _ask_groq),
-        ("Zhipu", _ask_zhipu),
-        ("OpenRouter", _ask_openrouter),
-    )
-    for provider_name, provider in providers:
-        try:
-            return await provider(
-                text,
-                system,
-                json_mode=json_mode,
-                max_output_tokens=max_output_tokens,
-            )
-        except Exception as error:
-            errors.append(f"{provider_name}: {error}")
-            logger.warning("%s 兜底失败: %s", provider_name, error)
+    if use_search:
+        compatible_result = await _ask_compatible_providers(
+            text,
+            system,
+            json_mode=json_mode,
+            max_output_tokens=max_output_tokens,
+            errors=errors,
+        )
+        if compatible_result is not None:
+            return compatible_result
 
     logger.error("AI 服务全部失败: %s", " | ".join(errors))
     raise AIServiceUnavailable("所有已配置的模型节点均请求失败")

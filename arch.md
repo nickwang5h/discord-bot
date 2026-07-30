@@ -17,7 +17,7 @@
 ├── bot.py                     # Bot 生命周期、扩展加载、命令同步和全局错误处理
 ├── config.py                  # 根目录、时区、日志级别和环境变量
 ├── core/
-│   ├── ai_client.py           # AI provider 降级编排与 Gemini cooldown
+│   ├── ai_client.py           # 按能力路由 AI provider 与 Gemini cooldown
 │   ├── ai_providers.py        # OpenAI-compatible 请求与统一 AIResult
 │   ├── feeds.py               # 异步 RSS 下载、UTC 时间过滤和并发容错
 │   ├── jobs.py                # RetryPolicy、single-flight 和单次发送事务
@@ -72,36 +72,49 @@ Groq、智谱和 OpenRouter 都使用 OpenAI-compatible Chat Completions 协议�
 
 `ask_ai()` 保留原有字符串 API，使用内部 HTML comment 携带模型 attribution，保证旧 Cog 和测试脚本兼容。Embed 层会移除 comment 并生成 `Powered by ...` footer。
 
-### 4.2 降级顺序
+### 4.2 能力路由与降级顺序
 
 ```text
-Gemini
-  ├─ Search 非限流失败且允许离线 → Gemini offline（一次）
-  └─ 失败/cooldown/未配置
-       ↓
-Groq: qwen/qwen3.6-27b
-      → openai/gpt-oss-120b
-      → llama-3.3-70b-versatile
-       ↓
-Zhipu: glm-4.7-flash
-       ↓
-OpenRouter 免费节点池
+普通生成（use_search=False）
+  Groq: qwen/qwen3.6-27b
+        → openai/gpt-oss-120b
+        → openai/gpt-oss-20b
+         ↓
+  Zhipu: glm-4.7-flash
+          → glm-4.5-flash
+         ↓
+  OpenRouter 免费节点池
+         ↓
+  Gemini offline（最后兜底）
+
+联网生成（use_search=True）
+  Gemini Search
+    ├─ 非限流失败且允许离线 → Gemini offline（一次）
+    └─ 失败/cooldown/未配置
+         ↓
+  Groq → Zhipu → OpenRouter
 ```
+
+普通问答、新闻 JSON 打分、日报整理和英文阅读都不需要模型自行联网，因此优先使用 Groq
+的 Qwen，把 Gemini 免费额度留给明确开启 Search 的请求。`fallback_offline=False` 的
+联网请求不会伪装成普通离线回答；Gemini Search 不可用时会直接报告联网服务不可用。
 
 OpenRouter 当前内置节点：
 
 1. `nvidia/nemotron-3-super-120b-a12b:free`
-2. `google/gemma-4-31b-it:free`
+2. `nvidia/nemotron-3-ultra-550b-a55b:free`（仅普通文本）
 3. `openai/gpt-oss-20b:free`
-4. `nvidia/nemotron-3-ultra-550b-a55b:free`
+4. `nvidia/nemotron-nano-9b-v2:free`
 
-模型目录在 2026-07-22 通过官方 API 实时验证。`scripts/healthcheck.py --live` 会重新验证列表，避免长期依赖文档中的静态状态。JSON mode 会跳过不支持 `response_format` 的节点。
+模型目录在 2026-07-30 通过官方 API 实时验证。`scripts/healthcheck.py --live` 会重新验证列表，避免长期依赖文档中的静态状态。OpenRouter 列表不含 Google 节点；JSON mode 会跳过不支持 `response_format` 的 Ultra，然后继续尝试 GPT-OSS 和 Nano。
 
-Qwen 3.6 在本项目中使用非思考模式，并要求 Groq 只返回最终答案，避免推理过程占满 completion token 预算。OpenAI-compatible 接口若返回 `finish_reason=length`，会将该候选视为失败并切换到下一个模型，不会把不完整正文交给 Discord 或 JSON 解析器。
+Qwen 3.6 在本项目中使用非思考模式，并要求 Groq 只返回最终答案；GPT-OSS 采用 low reasoning；智谱 GLM-4.7/4.5 Flash 都关闭 thinking。这些设置避免基础分类和摘要的推理过程占满 completion token 预算。Groq 已公告 `llama-3.3-70b-versatile` 将于 2026-08-16 下线，因此不再把它列为候选。OpenAI-compatible 接口若返回 `finish_reason=length`，会将该候选视为失败并切换到下一个模型，不会把不完整正文交给 Discord 或 JSON 解析器。
+
+Gemini Search 和最后兜底固定使用稳定版 `gemini-3.6-flash`。该模型于 2026-07-21 GA；相较 3.5 Flash，官方定位是更强的复杂任务表现、更少的 token/轮次和更低价格。它不参与普通任务的首选链路。
 
 ### 4.3 Cooldown 与失败语义
 
-Gemini 出现 `429` 或 `RESOURCE_EXHAUSTED` 时记录服务级 cooldown。冷却期内请求直接进入备用 provider，不再尝试同一个 Gemini offline 请求。
+Gemini 出现 `429` 或 `RESOURCE_EXHAUSTED` 时记录服务级 cooldown。冷却期内联网请求直接进入备用 provider，普通请求则继续沿非 Google provider 顺序执行，不再尝试 Gemini offline。
 
 普通交互命令在所有 provider 失败时得到用户友好的错误文本；定时内容使用 `raise_on_failure=True`，让失败进入任务重试，不会把错误提示作为日报正文推送。
 

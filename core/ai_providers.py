@@ -53,6 +53,7 @@ async def request_openai_compatible(
     timeout_seconds: float,
     max_output_tokens: int,
     token_limit_field: str = "max_tokens",
+    extra_payload: dict[str, object] | None = None,
 ) -> AIResult:
     """Call an OpenAI-compatible endpoint with ordered model failover."""
     messages = []
@@ -83,6 +84,8 @@ async def request_openai_compatible(
                 "messages": messages,
                 token_limit_field: max_output_tokens,
             }
+            if extra_payload:
+                payload.update(extra_payload)
             if spec.reasoning_effort is not None:
                 payload["reasoning_effort"] = spec.reasoning_effort
             if spec.reasoning_format is not None:

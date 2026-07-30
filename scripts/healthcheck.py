@@ -81,11 +81,17 @@ def run_offline_checks(report: Report, *, strict: bool) -> None:
     except Exception as error:
         report.error(f"settings.json 无效: {error}")
 
-    model_ids = [spec.model_id for spec in ai_client.OPENROUTER_MODELS]
-    if len(model_ids) == len(set(model_ids)):
-        report.ok("OpenRouter fallback 列表无重复项")
-    else:
-        report.error("OpenRouter fallback 列表存在重复项")
+    model_lists = {
+        "Groq": ai_client.GROQ_MODELS,
+        "Zhipu": ai_client.ZHIPU_MODELS,
+        "OpenRouter": ai_client.OPENROUTER_MODELS,
+    }
+    for provider, specs in model_lists.items():
+        model_ids = [spec.model_id for spec in specs]
+        if len(model_ids) == len(set(model_ids)):
+            report.ok(f"{provider} fallback 列表无重复项")
+        else:
+            report.error(f"{provider} fallback 列表存在重复项")
 
 
 async def _get_json(
