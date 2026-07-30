@@ -190,11 +190,14 @@ async def run_live_checks(report: Report) -> None:
         report.error("RSS 抓取器无法读取测试源")
 
     try:
-        sources = await web_search.search_web("人工智能")
+        sources = await web_search.search_web(
+            "人工智能",
+            alternate_queries=["artificial intelligence"],
+        )
         kinds = {source.kind for source in sources}
-        expected = {"Google News", "Wikipedia"}
-        if kinds == expected:
-            report.ok("联网问答抓取可用（Google News, Wikipedia）")
+        expected = {"Google News", "Wikipedia", "Wikipedia (English)"}
+        if expected.issubset(kinds):
+            report.ok("双语联网问答抓取可用（Google News, 中文/英文 Wikipedia）")
         elif kinds:
             report.warn(f"联网问答部分抓取可用（{', '.join(sorted(kinds))}）")
         else:

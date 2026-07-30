@@ -107,14 +107,15 @@ Qwen 普通问答（默认）
   └─ 普通生成链：Qwen → Zhipu → OpenRouter → Gemini offline
 
 Qwen 网页检索（低成本）
-  ├─ Google News RSS（最多 3 条）
-  └─ 中文 Wikipedia API（最多 2 条）
+  ├─ Qwen 生成一个等价英文检索词（原问题保持不变）
+  ├─ Google News RSS（原问题最多 3 条、英文查询最多 25 条）
+  └─ 中英文 Wikipedia 搜索命中摘要（中文最多 2 条、英文最多 10 条）
        ↓
-     固定大小证据包（[S1]...，含原始 URL）
+     最多 40 条双语候选证据（[S1]...，不向模型传入 URL）
        ↓
-     普通生成链，Qwen 优先
+     普通生成链，Qwen 优先，统一用中文回答
        ↓
-     程序确定性附加“来源”链接
+     程序附加模型实际引用的来源链接（最多 6 条）
 
 Gemini 原生搜索
   └─ Gemini Search（fallback_offline=False）
@@ -122,8 +123,9 @@ Gemini 原生搜索
 
 Qwen 网页检索与 Gemini 原生搜索互不自动切换：两个抓取源都无结果时，前者提示用户
 重试或主动选择 Gemini，不会自动花费 Google 配额；Gemini Search 不可用时也不会伪装
-成离线回答。新闻和百科事实来自抓取结果，模型只做归纳；网页材料被明确标记为不可信
-数据，不能覆盖 system instruction。Embed footer 始终显示实际 provider/model，基础
+成离线回答。当前或可能变化的事实以抓取结果为准，模型可使用一般背景知识解释；网页材料
+被明确标记为不可信数据，不能覆盖 system instruction。查询扩展由通用模型提示完成，
+不包含按奖项、地点或年份编写的主题特判。Embed footer 始终显示实际 provider/model，基础
 生成链发生故障降级时不会把备用模型冒充成 Qwen。
 
 OpenRouter 当前内置节点：
@@ -199,10 +201,12 @@ Discord channel.send（单次）
 
 ### 7.1 `/ask` 联网检索
 
-`core.web_search.search_web()` 只访问代码内固定的 Google News RSS 和中文 Wikipedia
-API，不接受用户提供目标主机。两者并发请求、共享 12 秒总超时，单个响应最大 1 MB；
-查询最多 300 字符，最终保留最多 3 条新闻和 2 条百科摘要。解析结果再次校验 HTTPS
-主机与路径，拒绝 Feed/API 中注入的第三方 URL。
+`core.web_search.search_web()` 只访问代码内固定的 Google News RSS 和中英文 Wikipedia
+API，不接受用户提供目标主机。请求共享 12 秒总超时，但不保存来源站点 Cookie，避免中英文
+地区设置互相污染；单个响应最大 1 MB，查询最多 300 字符。原问题最多保留 3 条新闻，
+英文等价查询最多保留 25 条新闻，中文百科最多 2 条、英文百科最多 10 条，总候选上限为 40。
+Wikipedia 使用搜索词命中的片段而非一律截取条目开头，更容易覆盖名单、日期等实际所问信息。
+解析结果再次校验 HTTPS 主机与路径，拒绝 Feed/API 中注入的第三方 URL。
 
 Wikipedia 请求从 Git 忽略的 `.env`/部署环境读取 `BOT_CONTACT_EMAIL`，生成
 `JonathanDiscordBot/1.0 (mailto:...)` User-Agent，以满足 Wikimedia 客户端身份要求。
@@ -210,9 +214,11 @@ Wikipedia 请求从 Git 忽略的 `.env`/部署环境读取 `BOT_CONTACT_EMAIL`�
 健康检查输出。缺失、占位、非法格式或包含换行时会跳过 Wikipedia，并记录不含邮箱值
 的配置 warning；Google News 仍可独立工作。
 
-检索材料按 `[S1]` 编号交给模型，并要求最新事实不得由模型记忆补齐。来源列表由程序
-生成并为其预留 Discord Embed 字符预算，所以模型输出过长时优先截短回答而保留链接。
-单一抓取源失败只记录 warning，另一个来源仍可完成回答。
+检索材料按 `[S1]` 编号交给模型，但不把长 URL 送入提示词；模型最多引用 6 个最相关来源。
+程序按引用编号恢复对应链接并为其预留 Discord Embed 字符预算，所以模型输出过长时优先
+截短回答而保留链接；模型未引用任何编号时保底显示前三条。单一抓取源失败只记录 warning，
+其他来源仍可完成回答。Google News 偶尔会按服务端策略缩减 RSS 条目，此时机器人只使用
+实际返回的证据，不通过主题特判补造结果。
 
 ### 7.2 指定链接总结
 
