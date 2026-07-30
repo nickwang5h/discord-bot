@@ -1,261 +1,338 @@
-import os
+import asyncio
+import logging
+import re
+import time
+
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
 
-load_dotenv(override=True)
-
+from config import get_env
 from core import settings
+from core.ai_providers import AIResult, ModelSpec, ProviderError, request_openai_compatible
 
-client = None
+logger = logging.getLogger(__name__)
+
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+GROQ_MODELS = [
+    ModelSpec(
+        "qwen/qwen3.6-27b",
+        reasoning_effort="none",
+        reasoning_format="hidden",
+    ),
+    ModelSpec("openai/gpt-oss-120b", reasoning_effort="low"),
+    ModelSpec("openai/gpt-oss-20b", reasoning_effort="low"),
+]
+ZHIPU_MODELS = [
+    ModelSpec("glm-4.7-flash"),
+    ModelSpec("glm-4.5-flash"),
+]
+OPENROUTER_MODELS = [
+    ModelSpec("nvidia/nemotron-3-super-120b-a12b:free"),
+    ModelSpec("nvidia/nemotron-3-ultra-550b-a55b:free", supports_json=False),
+    ModelSpec("openai/gpt-oss-20b:free"),
+    ModelSpec("nvidia/nemotron-nano-9b-v2:free"),
+]
+
+client: genai.Client | None = None
 model_available = False
+gemini_cooldown_until = 0.0
+
+
+class AIServiceUnavailable(RuntimeError):
+    """Raised when every configured model provider fails."""
+
 
 def reload_client() -> bool:
     global client, model_available
-    # 优先从 settings.json 读取，如果没有再尝试从环境变量读取
-    api_key = settings.get_setting("GEMINI_API_KEY")
-    if not api_key:
-        api_key = os.getenv("GEMINI_API_KEY")
-        
-    if api_key and api_key != "your_gemini_api_key_here":
-        try:
-            client = genai.Client(api_key=api_key)
-            model_available = True
-            return True
-        except Exception as e:
-            print(f"初始化 Gemini Client 失败: {e}")
-            client = None
-            model_available = False
-            return False
-    else:
+    api_key = settings.get_secret("GEMINI_API_KEY")
+    if not api_key or api_key == "your_gemini_api_key_here":
         client = None
         model_available = False
-        print("WARNING: GEMINI_API_KEY 未配置，AI 功能将不可用，请使用 /set_gemini_key 进行配置。")
+        logger.warning("GEMINI_API_KEY 未配置，将使用已配置的备用 AI 服务")
         return False
 
-# 启动时初始化
-reload_client()
-
-async def _ask_groq(text: str, sys_prompt: str):
-    import aiohttp
-    api_key = settings.get_setting("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise Exception("未配置 GROQ_API_KEY")
-        
-    models_to_try = [
-        "openai/gpt-oss-120b",
-        "qwen/qwen3.6-27b",
-        "llama-3.3-70b-versatile"
-    ]
-    
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
-    messages = []
-    if sys_prompt:
-        messages.append({"role": "system", "content": sys_prompt})
-    messages.append({"role": "user", "content": text})
-    
-    last_error = ""
-    async with aiohttp.ClientSession() as session:
-        for model_name in models_to_try:
-            payload = {
-                "model": model_name,
-                "messages": messages
-            }
-            try:
-                async with session.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        try:
-                            content = data["choices"][0]["message"]["content"]
-                            return f"{content}\n\n> 💡 *(本条回复由 Groq 极速节点 `{model_name}` 生成)*\n\n<!--MODEL:Groq ({model_name})-->"
-                        except (KeyError, IndexError):
-                            raise Exception(f"解析返回格式失败: {data}")
-                    else:
-                        error_text = await resp.text()
-                        last_error = f"HTTP {resp.status}: {error_text}"
-                        print(f"[Groq Fallback] 节点 {model_name} 失败: {last_error}")
-                        continue
-            except Exception as e:
-                last_error = str(e)
-                print(f"[Groq Fallback] 请求 {model_name} 抛出异常: {last_error}")
-                continue
-                
-    raise Exception(f"所有 Groq 备选节点均已耗尽。最后一次错误: {last_error}")
-
-async def _ask_zhipu(text: str, sys_prompt: str):
-    import aiohttp
-    api_key = settings.get_setting("ZHIPU_API_KEY") or os.getenv("ZHIPU_API_KEY")
-    if not api_key:
-        raise Exception("未配置 ZHIPU_API_KEY")
-        
-    model_name = "glm-4.7-flash"
-    
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
-    messages = []
-    if sys_prompt:
-        messages.append({"role": "system", "content": sys_prompt})
-    messages.append({"role": "user", "content": text})
-    
-    payload = {
-        "model": model_name,
-        "messages": messages
-    }
-    
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post("https://open.bigmodel.cn/api/paas/v4/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    try:
-                        content = data["choices"][0]["message"]["content"]
-                        return f"{content}\n\n> 💡 *(本条回复由智谱 AI 免费兜底节点 `{model_name}` 生成)*\n\n<!--MODEL:Zhipu ({model_name})-->"
-                    except (KeyError, IndexError):
-                        raise Exception(f"解析返回格式失败: {data}")
-                else:
-                    error_text = await resp.text()
-                    raise Exception(f"HTTP {resp.status}: {error_text}")
-        except Exception as e:
-            print(f"[Zhipu Fallback] 请求 {model_name} 抛出异常: {e}")
-            raise
-
-async def _ask_openrouter(text: str, sys_prompt: str):
-    import aiohttp
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise Exception("未配置 OPENROUTER_API_KEY")
-        
-    # 定义备选模型瀑布流 (用户自定义的排在第一位，后面跟着系统推荐的顶级免费节点)
-    user_model = settings.get_setting("OPENROUTER_MODEL") or os.getenv("OPENROUTER_MODEL")
-    fallback_models = [
-        "qwen/qwen3-next-80b-a3b-instruct:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nousresearch/hermes-3-llama-3.1-405b:free",
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "google/gemma-4-31b-it:free"
-    ]
-    
-    models_to_try = []
-    if user_model:
-        models_to_try.append(user_model)
-    for m in fallback_models:
-        if m not in models_to_try:
-            models_to_try.append(m)
-    
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
-    messages = []
-    if sys_prompt:
-        messages.append({"role": "system", "content": sys_prompt})
-    messages.append({"role": "user", "content": text})
-    
-    last_error = ""
-    
-    async with aiohttp.ClientSession() as session:
-        for model_name in models_to_try:
-            payload = {
-                "model": model_name,
-                "messages": messages
-            }
-            try:
-                async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        try:
-                            content = data["choices"][0]["message"]["content"]
-                            return f"{content}\n\n> 💡 *(本条回复由 OpenRouter 免费兜底节点 `{model_name}` 生成)*\n\n<!--MODEL:OpenRouter ({model_name})-->"
-                        except (KeyError, IndexError):
-                            raise Exception(f"解析返回格式失败: {data}")
-                    else:
-                        error_text = await resp.text()
-                        last_error = f"HTTP {resp.status}: {error_text}"
-                        print(f"[OpenRouter Fallback] 节点 {model_name} 失败: {last_error}")
-                        continue # 尝试下一个节点
-            except Exception as e:
-                last_error = str(e)
-                print(f"[OpenRouter Fallback] 请求 {model_name} 抛出异常: {last_error}")
-                continue
-                
-    raise Exception(f"所有 OpenRouter 备选节点均已耗尽。最后一次错误: {last_error}")
-
-async def ask_ai(text: str, system: str = "用简洁中文总结要点，分条列出。", use_search: bool = False, fallback_offline: bool = True):
-    if not model_available or not client:
-        return "⚠️ 当前尚未配置大模型 API Key，请联系管理员使用 `/set_gemini_key` 进行配置。"
-    
-    # 优先从 settings 中读取，如果没设置则退化使用环境变量或默认值
-    model_name = settings.get_setting("GEMINI_MODEL") or os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-    
-    async def _try_gemini(with_search: bool):
-        tools = []
-        if with_search:
-            tools.append(types.Tool(google_search=types.GoogleSearch()))
-            
-        config_kwargs = {}
-        if system:
-            config_kwargs["system_instruction"] = system
-        if tools:
-            config_kwargs["tools"] = tools
-            
-        config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
-        
-        import asyncio
-        try:
-            response = await asyncio.wait_for(
-                client.aio.models.generate_content(
-                    model=model_name,
-                    contents=text,
-                    config=config
-                ),
-                timeout=30.0
-            )
-        except asyncio.TimeoutError:
-            raise Exception("Gemini API 请求超时 (30s)")
-        return f"{response.text}\n\n<!--MODEL:Gemini ({model_name})-->"
-        
     try:
-        # Tier 1: Gemini with Search
-        return await _try_gemini(with_search=use_search)
-    except Exception as e:
-        error_msg = str(e)
-        print(f"[Fallback Triggered] Gemini API 抛出异常: {error_msg}")
-        
-        # 如果是搜索模式且允许离线降级，先尝试 Gemini 离线版
-        if use_search:
-            if not fallback_offline:
-                return f"⚠️ **联网功能暂不可用**：Gemini API 出现异常，且当前设置禁止离线降级。底层报错: {error_msg}"
-            
-            # Tier 2: Gemini without Search (Offline)
-            try:
-                return await _try_gemini(with_search=False)
-            except Exception as offline_e:
-                print(f"[Fallback Triggered] Gemini 离线调用也失败: {offline_e}")
-                # 继续往下走到 Tier 2.2
-        
-        # Tier 2.2: Groq 极速节点
-        try:
-            return await _ask_groq(text, system)
-        except Exception as groq_err:
-            print(f"[Fallback Triggered] Groq 兜底失败: {groq_err}")
+        client = genai.Client(api_key=api_key)
+        model_available = True
+        return True
+    except Exception as error:
+        client = None
+        model_available = False
+        logger.exception("初始化 Gemini Client 失败: %s", error)
+        return False
 
-        # Tier 2.5: Zhipu (GLM-4.7-Flash)
+
+def _gemini_model() -> str:
+    return settings.get_setting("GEMINI_MODEL") or get_env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+
+
+def _record_gemini_cooldown(error: Exception) -> bool:
+    global gemini_cooldown_until
+    message = str(error)
+    if "429" not in message and "RESOURCE_EXHAUSTED" not in message:
+        return False
+
+    delay = 60.0
+    match = re.search(r"retry(?: in|Delay['\": ]+)?\s*([\d.]+)s", message, re.IGNORECASE)
+    if match:
+        delay = max(1.0, float(match.group(1)))
+    gemini_cooldown_until = max(gemini_cooldown_until, time.time() + delay)
+    logger.warning("Gemini 触发限流，未来 %.1f 秒直接使用备用服务", delay)
+    return True
+
+
+async def _ask_gemini(
+    text: str,
+    system: str,
+    *,
+    with_search: bool,
+    json_mode: bool,
+    max_output_tokens: int,
+) -> AIResult:
+    if client is None:
+        raise ProviderError("Gemini 未初始化")
+
+    tools = [types.Tool(google_search=types.GoogleSearch())] if with_search else []
+    config_kwargs: dict[str, object] = {}
+    if system:
+        config_kwargs["system_instruction"] = system
+    if tools:
+        config_kwargs["tools"] = tools
+    if json_mode:
+        config_kwargs["response_mime_type"] = "application/json"
+    config_kwargs["max_output_tokens"] = max_output_tokens
+    config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+
+    try:
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=_gemini_model(),
+                contents=text,
+                config=config,
+            ),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError as error:
+        raise ProviderError("Gemini API 请求超时 (30s)") from error
+
+    content = (response.text or "").strip()
+    if not content:
+        raise ProviderError("Gemini 返回了空响应")
+    return AIResult(content, "Gemini", _gemini_model())
+
+
+async def _ask_groq(
+    text: str,
+    system: str,
+    json_mode: bool = False,
+    max_output_tokens: int = 4096,
+) -> AIResult:
+    api_key = settings.get_secret("GROQ_API_KEY")
+    if not api_key:
+        raise ProviderError("未配置 GROQ_API_KEY")
+    return await request_openai_compatible(
+        provider="Groq",
+        endpoint="https://api.groq.com/openai/v1/chat/completions",
+        api_key=api_key,
+        models=GROQ_MODELS,
+        text=text,
+        system=system,
+        json_mode=json_mode,
+        timeout_seconds=20,
+        max_output_tokens=max_output_tokens,
+        token_limit_field="max_completion_tokens",
+    )
+
+
+async def _ask_zhipu(
+    text: str,
+    system: str,
+    json_mode: bool = False,
+    max_output_tokens: int = 4096,
+) -> AIResult:
+    api_key = settings.get_secret("ZHIPU_API_KEY")
+    if not api_key:
+        raise ProviderError("未配置 ZHIPU_API_KEY")
+    return await request_openai_compatible(
+        provider="Zhipu",
+        endpoint="https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        api_key=api_key,
+        models=ZHIPU_MODELS,
+        text=text,
+        system=system,
+        json_mode=json_mode,
+        timeout_seconds=25,
+        max_output_tokens=max_output_tokens,
+        extra_payload={"thinking": {"type": "disabled"}},
+    )
+
+
+async def _ask_openrouter(
+    text: str,
+    system: str,
+    json_mode: bool = False,
+    max_output_tokens: int = 4096,
+) -> AIResult:
+    api_key = settings.get_secret("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ProviderError("未配置 OPENROUTER_API_KEY")
+
+    models = list(OPENROUTER_MODELS)
+    user_model = settings.get_setting("OPENROUTER_MODEL") or get_env("OPENROUTER_MODEL")
+    if user_model and all(spec.model_id != user_model for spec in models):
+        models.insert(0, ModelSpec(user_model))
+
+    return await request_openai_compatible(
+        provider="OpenRouter",
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        api_key=api_key,
+        models=models,
+        text=text,
+        system=system,
+        json_mode=json_mode,
+        timeout_seconds=25,
+        max_output_tokens=max_output_tokens,
+    )
+
+
+async def _ask_compatible_providers(
+    text: str,
+    system: str,
+    *,
+    json_mode: bool,
+    max_output_tokens: int,
+    errors: list[str],
+) -> AIResult | None:
+    providers = (
+        ("Groq", _ask_groq),
+        ("Zhipu", _ask_zhipu),
+        ("OpenRouter", _ask_openrouter),
+    )
+    for provider_name, provider in providers:
         try:
-            return await _ask_zhipu(text, system)
-        except Exception as zhipu_err:
-            print(f"[Fallback Triggered] 智谱 AI 兜底失败: {zhipu_err}")
-            
-        # Tier 3: OpenRouter 终极兜底
+            return await provider(
+                text,
+                system,
+                json_mode=json_mode,
+                max_output_tokens=max_output_tokens,
+            )
+        except Exception as error:
+            errors.append(f"{provider_name}: {error}")
+            logger.warning("%s 请求失败: %s", provider_name, error)
+    return None
+
+
+async def generate_ai(
+    text: str,
+    system: str = "用简洁中文总结要点，分条列出。",
+    use_search: bool = False,
+    fallback_offline: bool = True,
+    json_mode: bool = False,
+    max_output_tokens: int = 4096,
+) -> AIResult:
+    """Route basic generation to Qwen first and reserve Gemini priority for Search."""
+    errors: list[str] = []
+    in_cooldown = time.time() < gemini_cooldown_until
+
+    if not use_search:
+        compatible_result = await _ask_compatible_providers(
+            text,
+            system,
+            json_mode=json_mode,
+            max_output_tokens=max_output_tokens,
+            errors=errors,
+        )
+        if compatible_result is not None:
+            return compatible_result
+
+    if model_available and client is not None and not in_cooldown:
         try:
-            openrouter_resp = await _ask_openrouter(text, system)
-            return openrouter_resp
-        except Exception as or_err:
-            return f"⚠️ **AI 服务全线告急**。\n主干 Gemini 出现异常，Groq 与智谱备用节点均失效，且后备 OpenRouter 节点唤醒失败。\nGemini 错误: {error_msg}\nOpenRouter 错误: {or_err}"
+            return await _ask_gemini(
+                text,
+                system,
+                with_search=use_search,
+                json_mode=json_mode,
+                max_output_tokens=max_output_tokens,
+            )
+        except Exception as error:
+            errors.append(f"Gemini: {error}")
+            logger.warning("Gemini 请求失败: %s", error)
+            rate_limited = _record_gemini_cooldown(error)
+
+            if use_search and not fallback_offline:
+                raise AIServiceUnavailable("Gemini 联网请求失败，且禁止离线降级") from error
+            if use_search and not rate_limited:
+                try:
+                    return await _ask_gemini(
+                        text,
+                        system,
+                        with_search=False,
+                        json_mode=json_mode,
+                        max_output_tokens=max_output_tokens,
+                    )
+                except Exception as offline_error:
+                    errors.append(f"Gemini offline: {offline_error}")
+                    _record_gemini_cooldown(offline_error)
+                    logger.warning("Gemini 离线请求失败: %s", offline_error)
+    else:
+        reason = "冷却中" if in_cooldown else "未配置"
+        errors.append(f"Gemini: {reason}")
+        if use_search and not fallback_offline:
+            raise AIServiceUnavailable(f"Gemini {reason}，且禁止离线降级")
+
+    if use_search:
+        compatible_result = await _ask_compatible_providers(
+            text,
+            system,
+            json_mode=json_mode,
+            max_output_tokens=max_output_tokens,
+            errors=errors,
+        )
+        if compatible_result is not None:
+            return compatible_result
+
+    logger.error("AI 服务全部失败: %s", " | ".join(errors))
+    raise AIServiceUnavailable("所有已配置的模型节点均请求失败")
+
+
+async def ask_ai(
+    text: str,
+    system: str = "用简洁中文总结要点，分条列出。",
+    use_search: bool = False,
+    fallback_offline: bool = True,
+    json_mode: bool = False,
+    raise_on_failure: bool = False,
+    max_output_tokens: int = 4096,
+) -> str:
+    """Backward-compatible string API used by existing Cogs and scripts."""
+    try:
+        result = await generate_ai(
+            text,
+            system=system,
+            use_search=use_search,
+            fallback_offline=fallback_offline,
+            json_mode=json_mode,
+            max_output_tokens=max_output_tokens,
+        )
+        return result.as_legacy_text()
+    except AIServiceUnavailable:
+        if raise_on_failure:
+            raise
+        if use_search and not fallback_offline:
+            return "⚠️ **联网功能暂不可用**：Gemini 联网服务当前不可用。"
+        return "⚠️ **AI 服务暂时不可用**：所有已配置的模型节点均请求失败，请稍后重试。"
+
+
+def get_provider_status() -> dict[str, object]:
+    """Return non-sensitive status information for health checks and admin commands."""
+    return {
+        "gemini": bool(settings.get_secret("GEMINI_API_KEY")),
+        "groq": bool(settings.get_secret("GROQ_API_KEY")),
+        "zhipu": bool(settings.get_secret("ZHIPU_API_KEY")),
+        "openrouter": bool(settings.get_secret("OPENROUTER_API_KEY")),
+        "gemini_model": _gemini_model(),
+        "gemini_cooldown_seconds": max(0, int(gemini_cooldown_until - time.time())),
+    }
+
+
+reload_client()

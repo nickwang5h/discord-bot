@@ -1,124 +1,243 @@
-# Discord AI Bot 架构文档 (Architecture)
+# Discord AI Bot 架构文档
 
-## 1. 系统概述 (System Overview)
+## 1. 目标与原则
 
-本项目是一个基于 `discord.py` 构建的多功能 Discord 机器人。其核心亮点是通过整合 Google Gemini AI 模型，为 Discord 社区提供智能化的问答、信息总结和自动化工具。
+本项目是一个基于 `discord.py` 的低成本社区机器人。核心目标按优先级排列为：
 
-整体架构采用了**模块化设计**，通过 Discord 原生的 `Cogs` 机制实现了功能的高度解耦，使得核心引擎与具体业务逻辑分离，便于扩展和维护。
+1. 内容必须可追溯：新闻事实来自 RSS、Hacker News 或用户提供的网页，模型负责筛选和表达。
+2. 免费额度可持续：限制输入规模、输出 token、并发和自动触发频率。
+3. 故障可降级：单一模型或单一 RSS 源失败不应拖垮整个机器人。
+4. 推送不重复：生成可以重试，Discord 发送采用 at-most-once 语义。
+5. 小项目不过度框架化：基础设施集中在 `core/`，Discord 交互保留在 `cogs/`。
 
-## 2. 目录结构与职责 (Directory Structure)
+## 2. 模块结构
 
 ```text
 /discord-bot
-├── bot.py                # 应用程序主入口
-├── config.py             # 全局环境变量加载
-├── .env                  # 敏感配置 (Token, API Key)
-├── requirements.txt      # 依赖包列表
-├── core/                 # 核心基础服务层 (Core Services)
-│   ├── ai_client.py      # Gemini AI 客户端封装
-│   ├── settings.py       # 本地 JSON 配置读写
-│   └── utils.py          # 通用工具函数 (如统一消息卡片 Embed 生成)
-└── cogs/                 # 业务逻辑模块层 (Discord Cogs)
-    ├── ask.py            # AI 智能问答模块
-    ├── link_summary.py   # 网页与视频总结监听与命令模块
-    ├── ai_daily.py       # 定时任务：AI 日报推送
-    ├── news_digest.py    # 定时任务：综合新闻推送
-    ├── daily_reading.py  # 定时任务：每日英文阅读 (Scenario/RSS/TED)
-    ├── canada_life.py    # 实用工具：汇率查询等
-    ├── dev_tools.py      # 开发者工具：极客词典、正则生成等
-    ├── lifestyle.py      # 生活方式助手：菜谱生成等
-    └── settings.py       # 用户个性化设置管理
+├── bot.py                     # Bot 生命周期、扩展加载、命令同步和全局错误处理
+├── config.py                  # 根目录、时区、日志级别和环境变量
+├── core/
+│   ├── ai_client.py           # 按能力路由 AI provider 与 Gemini cooldown
+│   ├── ai_providers.py        # OpenAI-compatible 请求与统一 AIResult
+│   ├── feeds.py               # 异步 RSS 下载、UTC 时间过滤和并发容错
+│   ├── jobs.py                # RetryPolicy、single-flight 和单次发送事务
+│   ├── storage.py             # 带进程锁和原子替换的 JSON Store
+│   ├── settings.py            # 公共设置/本地密钥分离
+│   ├── news_cache.py          # 高级新闻缓存、批量去重和推送状态
+│   ├── data_ingester.py       # 高级新闻数据源定义与标准化
+│   ├── web_fetcher.py         # 网页大小/超时/跳转/内网访问限制
+│   ├── logging_config.py      # 标准日志初始化
+│   └── utils.py               # Discord Embed 和 Markdown 表格转换
+├── cogs/
+│   ├── ask.py                 # /ask
+│   ├── link_summary.py        # 自动链接总结与 /summary
+│   ├── ai_daily.py            # Hacker News / AI 日报
+│   ├── news_digest.py         # 国际/加拿大/金融 RSS 日报
+│   ├── advanced_news.py       # 小时抓取、AI 打分和早晚精读
+│   ├── daily_reading.py       # 每日英文阅读
+│   ├── health.py              # /health 管理员诊断
+│   └── ...                    # 设置、生活和开发工具
+├── scripts/
+│   ├── healthcheck.py         # 零生成 token 健康检查
+│   └── validate.py            # 编译 + 测试 + 健康检查
+└── scratch/                   # 回归和集成测试
 ```
 
-## 3. 核心层设计 (Core Layer)
+## 3. 启动生命周期
 
-### 3.1 机器人主引擎 (`bot.py`)
-作为入口文件，它负责：
-1. 初始化 `discord.ext.commands.Bot` 实例。
-2. 配置必要的 Intents (如 `message_content`) 以读取用户消息。
-3. 在 `on_ready` 事件中动态加载 `cogs` 目录下的所有模块。
-4. 同步斜杠命令 (Slash Commands) 到 Discord 服务器。
-5. 包含全局的基础连通性测试命令 (`/ping`)。
+`bot.py` 使用 `DiscordBot.setup_hook()` 加载 Cog 和同步 slash command。`setup_hook` 每个进程只执行一次；Discord Gateway 重连只触发 `on_ready` 日志，不会重新加载 Cog 或重复启动定时循环。
 
-### 3.2 AI 客户端层 (`core/ai_client.py`)
-采用单例模式封装 Google `genai` SDK，提供简单易用的异步接口：
-- `reload_client()`: 支持动态加载和重新初始化 API 凭证，优先读取本地设置(`settings.json`)，回退到系统环境变量。
-- `ask_ai(text, system, use_search)`: 核心请求方法，用于向 Gemini 发送提示词并获取结构化响应。支持通过 `use_search=True` 动态挂载 Google Search 工具以获取实时联网数据。
+加载失败的扩展会被单独记录，其他扩展仍可启动。全局 app command error handler 统一处理权限、冷却和未知异常，已经响应过的 interaction 会使用 follow-up 返回错误。
 
-### 3.3 数据持久层 (`core/settings.py`)
-提供轻量级的本地存储方案：
-- 使用 `settings.json` 进行简单的数据持久化。
-- 提供了 `get_setting` 和 `set_setting` 方法，用于动态管理应用级或用户级的偏好设置（如自定义的 API Key, 默认调用的 AI 模型名称等）。
+全局时区来自 `BOT_TIMEZONE`，默认 `America/Toronto`，所有定时 Cog 使用 `config.TZ`，不再各自创建时区对象。
 
-### 3.4 视图构建层 (`core/utils.py`)
-- 提供 `create_ai_embed` 工具，用于将 AI 文本输出包装成 Discord Embed 格式，使得 UI 更加美观，同时自动处理 Discord 限制的 4096 字符截断问题。
+## 4. AI 服务层
 
-## 4. 业务模块层设计 (Cogs Layer)
+### 4.1 结果与 provider
 
-功能被分散到多个独立的 Cog 中，主要包含以下三种交互模式：
+`core.ai_providers.AIResult` 保存：
 
-1. **斜杠命令 (App Commands)**
-   - 例: `cogs/ask.py` 中的 `/ask` 命令。响应用户主动触发的请求，经由 `ask_ai` 获取解答（默认关闭在线搜索以节省配额）。
-   - 例: `cogs/lifestyle.py` 中的 `/recipe`，支持 `search_online` 参数动态决定是否联网搜索食谱（默认关闭）。
+- `text`：正文；
+- `provider`：Gemini、Groq、Zhipu 或 OpenRouter；
+- `model`：实际模型 ID。
 
-2. **开发工具与信息处理型**：
-   这类功能通常需要处理特定的数据或文本结构，并不需要泛泛的聊天能力。
-   - `dev_tools.py`：包含解释代码 (`/explain`)、生成正则表达式 (`/regex`)、工具对比 (`/vs`) 等程序员实用工具。
-   - `link_summary.py`：利用 `trafilatura` 和 `lxml_html_clean` 解析任意网址正文，调用大模型进行网页总结。
+Groq、智谱和 OpenRouter 都使用 OpenAI-compatible Chat Completions 协议，因此共享 `request_openai_compatible()`。该函数负责：
 
-3. **定时与自动化广播型**：
-   使用 `discord.ext.tasks` 进行后台循环。
-   - `ai_daily.py`：每日固定时间从 Hacker News 爬取 Top 30 热门帖子，交由大模型过滤筛选并生成每日的“AI 前沿快报”。
-   - `news_digest.py`：利用 RSS 爬虫技术 (`feedparser`) 从多个高质量且中立的新闻源 (BBC World, CBC Top Stories, WSJ Markets) 并发抓取过去24小时内的国际、加拿大和金融新闻，交由离线大模型严格按照板块进行总结，保证了极高的新闻密度和真实性。
-   - `daily_reading.py`：每天早上 7:30 自动生成并推送 3 种不同风格的英文阅读材料（AI 生成实用场景对话、真实 RSS 外刊精读、TED 金句赏析），帮助社区成员培养语感。
+- system/user message 构造；
+- 模型顺序降级；
+- JSON mode；
+- 最大输出 token；
+- provider 级总超时、HTTP 错误和响应结构验证；
+- 清除 `<think>` 推理块。
 
-## 5. 数据流向与工作流程 (Data Flow)
+`ask_ai()` 保留原有字符串 API，使用内部 HTML comment 携带模型 attribution，保证旧 Cog 和测试脚本兼容。Embed 层会移除 comment 并生成 `Powered by ...` footer。
 
-以**链接自动总结**功能为例，数据流转如下：
+### 4.2 能力路由与降级顺序
 
-1. **触发**: 用户在频道内发送包含 URL 的消息。
-2. **拦截**: `link_summary.Cog.on_message` 监听到消息，匹配 URL。
-3. **抓取 (IO 密集型)**: 
-   - 判定为 YouTube 链接 -> 请求 `youtube_transcript_api` 获取字幕。
-   - 判定为普通网页 -> 请求 `trafilatura` 抓取并提取正文。
-   *(此过程通过 `asyncio.to_thread` 放到后台线程执行，避免阻塞 Discord 机器人的事件循环)。*
-4. **AI 推理 (网络密集型)**: 抓取到的文本数据送入 `core.ai_client.summarize()`。
-5. **UI 渲染**: 返回总结文本后，经 `core.utils.create_ai_embed()` 渲染为富文本卡片。
-6. **响应**: 回复用户所在的频道，并替换原始占位的 "正在抓取" 消息。
+```text
+普通生成（use_search=False）
+  Groq: qwen/qwen3.6-27b
+        → openai/gpt-oss-120b
+        → openai/gpt-oss-20b
+         ↓
+  Zhipu: glm-4.7-flash
+          → glm-4.5-flash
+         ↓
+  OpenRouter 免费节点池
+         ↓
+  Gemini offline（最后兜底）
 
-## 6. 第三方依赖 (External Dependencies)
+联网生成（use_search=True）
+  Gemini Search
+    ├─ 非限流失败且允许离线 → Gemini offline（一次）
+    └─ 失败/cooldown/未配置
+         ↓
+  Groq → Zhipu → OpenRouter
+```
 
-- **Discord 集成**: `discord.py`
-- **网络请求**: `aiohttp` (用于异步并发获取 Hacker News 等外部 API 数据)
-- **AI 引擎**: `google-genai` (用于调用 Google Gemini 3.5 Flash/Pro 等模型)
-- **网页解析**: `trafilatura`
-- **视频解析**: `youtube-transcript-api`
-- **环境变量**: `python-dotenv`
+普通问答、新闻 JSON 打分、日报整理和英文阅读都不需要模型自行联网，因此优先使用 Groq
+的 Qwen，把 Gemini 免费额度留给明确开启 Search 的请求。`fallback_offline=False` 的
+联网请求不会伪装成普通离线回答；Gemini Search 不可用时会直接报告联网服务不可用。
 
-## 7. 架构决策与历史尝试 (Architectural Decisions & Experiments)
+OpenRouter 当前内置节点：
 
-为了确保机器人的高可用性与低成本，在开发过程中我们进行过以下技术路线的尝试与回滚：
+1. `nvidia/nemotron-3-super-120b-a12b:free`
+2. `nvidia/nemotron-3-ultra-550b-a55b:free`（仅普通文本）
+3. `openai/gpt-oss-20b:free`
+4. `nvidia/nemotron-nano-9b-v2:free`
 
-1. **Google Search Grounding (联网搜索功能)**
-   - **尝试**：最初在 `/news`（早间新闻）与 `/ask` 等核心命令中默认开启了 `use_search=True`。期望利用 Gemini 原生的 Google Search 工具直接获取实时数据并总结分类。
-   - **回滚原因**：Google Gemini Free 额度（15 RPM / 1500 RPD）对 Search 调用的限制极为严苛，极易触发 `429 RESOURCE_EXHAUSTED` 甚至 `503` 宕机。此外，在配合强限制的提示词（如“必须分为4个板块，每板块5条”）时，Search 模式经常由于找不到完美匹配而发生**安全拦截幻觉**，直接返回空字符串（表现为 Discord 卡片内容为空）。
-   - **最终决策**：将所有常规命令的搜索默认关闭。新闻模块 (`news_digest.py`) 则完全弃用 Search，转为使用传统的 RSS 爬虫 (`feedparser`) 获取多源高质量新闻 (如 BBC, Global News, WSJ)，再交由离线模型纯文本总结。稳定性提升至 100%。
+模型目录在 2026-07-30 通过官方 API 实时验证。`scripts/healthcheck.py --live` 会重新验证列表，避免长期依赖文档中的静态状态。OpenRouter 列表不含 Google 节点；JSON mode 会跳过不支持 `response_format` 的 Ultra，然后继续尝试 GPT-OSS 和 Nano。
 
-2. **xAI SDK (Grok) 降级方案**
-   - **尝试**：为了应对 Gemini 的 `429` 限流，最初计划接入 Elon Musk 的 Grok 模型作为二级回退网关。编写了集成代码并安装了 `xai-sdk`。
-   - **回滚原因**：经过文档与 API 调研，确认 Grok 没有真正意义上的“免费测试额度”，必须绑定信用卡预充值 (Pre-paid Billing) 才能使用。这与本项目“零成本/纯免费白嫖”的运维理念不符。
-   - **最终决策**：卸载 `xai-sdk`。引入 **OpenRouter** 平台（采用原生 `aiohttp`，0 额外依赖），使用其提供的海量免费节点（如 `google/gemini-2.5-flash-exp:free`）完美实现了免费兜底。
+Qwen 3.6 在本项目中使用非思考模式，并要求 Groq 只返回最终答案；GPT-OSS 采用 low reasoning；智谱 GLM-4.7/4.5 Flash 都关闭 thinking。这些设置避免基础分类和摘要的推理过程占满 completion token 预算。Groq 已公告 `llama-3.3-70b-versatile` 将于 2026-08-16 下线，因此不再把它列为候选。OpenAI-compatible 接口若返回 `finish_reason=length`，会将该候选视为失败并切换到下一个模型，不会把不完整正文交给 Discord 或 JSON 解析器。
 
-3. **Groq 极速节点中间层兜底**
-   - **尝试**：在进入智谱或 OpenRouter 之前，我们引入了 Groq 的 `llama-3.3-70b-versatile` 作为一级中间缓冲。由于 Groq 依托其特制的 LPU 架构，推理速度极快（数百 Tokens/秒），非常适合弥补 Gemini 失败时的实时交互体验。
-   - **最终决策**：在 `core/ai_client.py` 中实现了 Tier 2.2 降级逻辑。
+Gemini Search 和最后兜底固定使用稳定版 `gemini-3.6-flash`。该模型于 2026-07-21 GA；相较 3.5 Flash，官方定位是更强的复杂任务表现、更少的 token/轮次和更低价格。它不参与普通任务的首选链路。
 
-4. **智谱 AI (GLM-4.7-Flash) 中文层兜底**
-   - **尝试**：为了在 Groq 和终极兜底 OpenRouter 之间增加一层更稳定、生成质量更高的中文原生大模型缓冲，我们引入了智谱 AI 的免费模型 `glm-4.7-flash`。
-   - **最终决策**：在 `core/ai_client.py` 中实现了 Tier 2.5 降级逻辑。如果 Groq 也失败，则退化到智谱 AI，最后退化到 OpenRouter 的免费节点池。维持了“零成本”原则。
+### 4.3 Cooldown 与失败语义
 
-## 8. 开发与运维规范 (Development & DevOps Practices)
+Gemini 出现 `429` 或 `RESOURCE_EXHAUSTED` 时记录服务级 cooldown。冷却期内联网请求直接进入备用 provider，普通请求则继续沿非 Google provider 顺序执行，不再尝试 Gemini offline。
 
-1. **测试与临时文件存放**：
-   - 所有一次性测试脚本、临时生成的验证文件、数据转储等必须放置在 `scratch/` 目录下。
-   - 严禁将测试脚本（如 `test_xxx.py`）随意散落在项目主目录，以免造成根目录混乱和意外提交。
+普通交互命令在所有 provider 失败时得到用户友好的错误文本；定时内容使用 `raise_on_failure=True`，让失败进入任务重试，不会把错误提示作为日报正文推送。
+
+所有请求默认限制 4096 个输出 token。高级新闻以最多 8 条一批、3000 输出 token 进行 JSON 打分，确保免费模型的 prompt 与 completion 预算不会因单次请求超过 8k；Discord 最终正文仍限制在 4000 字符附近。
+
+OpenAI-compatible provider 的超时覆盖整个候选模型池，而不是每个模型重新计时；HTTP 413 会直接终止该 provider 的模型轮询，因为相同 payload 不会因切换模型而缩小。
+
+## 5. 定时任务事务
+
+`core.jobs` 集中实现两个概念：
+
+- `retry_async()`：默认最多 3 次，延迟按 60s → 120s 指数退避，上限 300s。
+- `run_delivery_job()`：同一进程内 single-flight；只重试 build，deliver 仅执行一次，发送后状态更新也不会导致重新发送。
+
+标准日报流程：
+
+```text
+定时/管理员触发
+      ↓
+asyncio.Lock（已有实例则跳过）
+      ↓
+抓取 + AI 生成（可重试）
+      ↓
+Discord channel.send（单次）
+      ↓
+可选 on_delivered（例如清理新闻缓存）
+```
+
+这里选择 at-most-once 而不是“发送失败就重试”。Discord 已接收消息但客户端超时属于不确定状态，自动重发会产生用户之前遇到的双报告。代价是极少数不确定发送可能漏报，可由管理员手动测试命令补发。
+
+每日英文阅读包含三张卡片，使用自己的 single-flight 锁；每张卡片生成最多重试一次，发送成功后 reaction 失败不会重发卡片。
+
+## 6. 新闻与 RSS 数据流
+
+`core.feeds` 统一所有 RSS：
+
+1. `aiohttp` 下载，20 秒总超时、单源最大 5 MB；
+2. `feedparser` 在线程中解析 bytes；
+3. RSS 时间按 UTC (`calendar.timegm`) 解释；
+4. 单源失败只记录 warning，其他源继续；
+5. 输出统一 `FeedItem`。
+
+低成本输入限制：
+
+- AI/HN 日报读取 Top 30；
+- 综合日报每个 RSS 最多 8 条；
+- 高级新闻每个 RSS 最多 4 条；
+- 高级新闻在送入模型前使用一次缓存读取批量去重。
+
+高级新闻的 60 分钟 interval loop 会跳过进程启动时的即时执行，避免重启触发全量补抓；手动测试命令仍可立即抓取。同一进程只允许一个抓取任务运行。若所有 AI provider 都失败，本轮立即停止，不再用剩余批次持续冲击限流节点。
+
+高级新闻 JSON 分析直接调用失败即抛异常的 `generate_ai()`，不会经过可能返回用户提示文本的兼容接口。代码会校验 `news` 为数组，只接受原始 batch 中存在的 URL，恢复原始标题/来源，将分数限制在 0-1 后再写入缓存。启动时会移除缺少当前评分字段的旧 schema 缓存；这些记录无法参与现有筛选，且会阻止相同 URL 按新规则重新打分。
+
+## 7. 链接总结
+
+普通网页经 `core.web_fetcher.fetch_public_html()` 下载：
+
+- 只允许 HTTP/HTTPS；
+- 拒绝 URL 凭证、localhost、私网和保留 IP；
+- 每次跳转重新验证，最多 3 次；
+- 总超时 20 秒，正文最大 2 MB；
+- 只接受 HTML/XHTML/plain text。
+
+随后 `trafilatura` 在线程中提取正文，最多向模型提供 20,000 字符。自动监听每位用户 60 秒一次，整个 Cog 最多并发两个总结任务；`/summary` 同样共享并发上限。
+
+YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视频媒体。
+
+## 8. 存储与密钥
+
+`core.storage.JsonStore` 使用进程内 `RLock` 和同目录临时文件 + `os.replace`，避免写入中断造成半个 JSON 文件。
+
+- `settings.json`：频道 ID、模型偏好等非敏感设置，可跟踪。
+- `data/news_cache.json`：新闻缓存，Git 忽略。
+- `data/secrets.json`：slash command 保存的本地密钥，Git 忽略。
+- `.env`：部署密钥，Git 忽略。
+
+`get_secret()` 优先读取本地 secret store，再读取环境变量，最后兼容旧版本曾写入 `settings.json` 的密钥。再次保存密钥时会删除旧的公共设置项。
+
+## 9. 展示层
+
+`create_ai_embed()` 负责：
+
+- 提取 provider/model footer；
+- 将 Markdown 表格确定性转换为项目符号；
+- 保留代码块中的表格字符；
+- 截断超出 Discord Embed description 限制的正文。
+
+日报 prompt 同时要求 bullet list、禁止表格和禁止生成第二版。Prompt 是第一层约束，确定性转换是第二层兜底。
+
+## 10. 运维与自动化
+
+`/health` 是管理员专用、零模型调用的运行时诊断，展示：
+
+- Gateway latency；
+- provider 是否配置、Gemini 模型和 cooldown；
+- 定时 Loop 是否运行/失败；
+- 推送频道是否配置。
+
+`scripts/healthcheck.py --strict --live` 不调用模型生成，只验证：
+
+- Python/JSON/channel 配置；
+- 至少一个 AI provider；
+- Gemini key + model metadata；
+- Groq/OpenRouter 实时模型目录；
+- Discord bot token；
+- BBC/NPR RSS 抓取。
+
+`scripts/validate.py` 依次执行 compileall、核心回归测试、所有 Cog 加载/卸载测试和严格健康检查。`--live` 可用于 cron、systemd timer 或 CI。
+
+`.github/workflows/validate.yml` 在 push/pull request 上使用 Python 3.13 运行验证；CI 不持有部署密钥，因此使用 `--allow-missing-secrets`，密钥与在线 provider 检查留给部署环境的 live healthcheck。
+
+## 11. 测试策略
+
+测试脚本统一放在 `scratch/`：
+
+- `test_core_services.py`：原子存储、密钥隔离、缓存去重/迁移、RSS UTC、退避、URL 安全、AIResult。
+- `test_extensions.py`：所有 Cog 的加载/卸载。
+- `test_regressions.py`：Gemini cooldown、provider fallback、高级新闻批次失败/启动行为、日报 single-flight/单次发送、表格转换。
+- 其他 `test_*.py`：按 provider 或数据源进行人工集成测试。
+
+## 12. 当前限制
+
+- single-flight 与发送语义只覆盖单进程；多副本部署需要 Redis/数据库分布式锁和持久化 delivery key。
+- JSON Store 适合个人/小社区机器人，不适合多进程高并发写入。
+- 网页目标会在请求前验证 DNS 和每个 redirect；它降低常见 SSRF 风险，但不替代独立网络沙箱。
+- 免费模型和 RSS 源会变化，应定期运行 live healthcheck。

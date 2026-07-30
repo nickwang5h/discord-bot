@@ -1,31 +1,71 @@
-import json
 import os
-from typing import Dict, Any
+from typing import Any
 
-SETTINGS_FILE = "settings.json"
+from config import PROJECT_ROOT
+from core.storage import JsonStore
 
-def load_settings() -> Dict[str, Any]:
-    if not os.path.exists(SETTINGS_FILE):
-        return {}
-    try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading settings: {e}")
-        return {}
+SETTINGS_FILE = PROJECT_ROOT / "settings.json"
+SECRETS_FILE = PROJECT_ROOT / "data" / "secrets.json"
 
-def save_settings(data: Dict[str, Any]):
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error saving settings: {e}")
+_settings_store = JsonStore(SETTINGS_FILE, dict)
+_secrets_store = JsonStore(SECRETS_FILE, dict)
+
+
+def load_settings() -> dict[str, Any]:
+    return _settings_store.read()
+
+
+def save_settings(data: dict[str, Any]) -> None:
+    _settings_store.write(data)
+
 
 def get_setting(key: str, default: Any = None) -> Any:
-    settings = load_settings()
-    return settings.get(key, default)
+    return load_settings().get(key, default)
 
-def set_setting(key: str, value: Any):
-    settings = load_settings()
-    settings[key] = value
-    save_settings(settings)
+
+def set_setting(key: str, value: Any) -> None:
+    def update(data: dict[str, Any]) -> dict[str, Any]:
+        data[key] = value
+        return data
+
+    _settings_store.update(update)
+
+
+def delete_setting(key: str) -> None:
+    def update(data: dict[str, Any]) -> dict[str, Any]:
+        data.pop(key, None)
+        return data
+
+    _settings_store.update(update)
+
+
+def get_secret(key: str, default: str | None = None) -> str | None:
+    """Read secrets from ignored local storage, then environment, then legacy settings."""
+    def usable(value: Any) -> str | None:
+        if not value:
+            return None
+        text = str(value).strip()
+        if text.startswith("your_") and text.endswith("_here"):
+            return None
+        return text
+
+    value = usable(_secrets_store.read().get(key))
+    if value is not None:
+        return value
+
+    value = usable(os.getenv(key))
+    if value is not None:
+        return value
+
+    # Compatibility with keys saved by older bot versions.
+    return usable(get_setting(key)) or default
+
+
+def set_secret(key: str, value: str) -> None:
+    def update(data: dict[str, Any]) -> dict[str, Any]:
+        data[key] = value
+        return data
+
+    _secrets_store.update(update)
+    if key in load_settings():
+        delete_setting(key)

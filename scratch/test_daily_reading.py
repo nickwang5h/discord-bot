@@ -2,8 +2,8 @@ import asyncio
 import os
 import sys
 
-# Add project root to sys.path so we can import core
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add project root to sys.path so the script also works outside the repository cwd.
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cogs.daily_reading import DailyReading
 import discord
@@ -30,8 +30,8 @@ async def test_reading():
     print("Result:")
     print(rss)
     
-    print("\n--- Testing Quote Generation ---")
-    quote = await cog.generate_quote()
+    print("\n--- Testing TED Reading Generation ---")
+    quote = await cog.generate_ted_reading()
     print("Result:")
     print(quote)
 

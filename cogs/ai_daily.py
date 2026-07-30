@@ -1,33 +1,45 @@
 import datetime
-import zoneinfo
+import logging
 from discord.ext import commands, tasks
 import discord
 import asyncio
 import aiohttp
+from config import TZ
 from core import settings, ai_client
+from core.jobs import run_delivery_job
 from core.utils import create_ai_embed
 
-TZ = zoneinfo.ZoneInfo("America/Toronto")
+logger = logging.getLogger(__name__)
 
 class AIDaily(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._delivery_lock = asyncio.Lock()
         self.ai_news_daily.start()
 
     def cog_unload(self):
         self.ai_news_daily.cancel()
 
-    async def _execute_daily(self, channel):
-        async with aiohttp.ClientSession() as session:
+    async def _build_daily_embed(self):
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             # 1. 获取 HN Top 50 的 ID
             async with session.get("https://hacker-news.firebaseio.com/v0/topstories.json") as response:
+                response.raise_for_status()
                 story_ids = await response.json()
-                story_ids = story_ids[:50]
+                if not isinstance(story_ids, list) or not story_ids:
+                    raise RuntimeError("Hacker News 未返回 story ID")
+                story_ids = story_ids[:30]
             
             # 2. 并发获取文章详情
             async def fetch_story(story_id):
-                async with session.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json") as res:
-                    return await res.json()
+                try:
+                    async with session.get(f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json") as res:
+                        res.raise_for_status()
+                        return await res.json()
+                except Exception as error:
+                    logger.warning("抓取 HN 条目 %s 失败: %s", story_id, error)
+                    return None
             
             tasks_list = [fetch_story(sid) for sid in story_ids]
             stories = await asyncio.gather(*tasks_list)
@@ -40,6 +52,9 @@ class AIDaily(commands.Cog):
                 url = item.get('url', f"https://news.ycombinator.com/item?id={item.get('id')}")
                 score = item.get('score', 0)
                 news_items.append(f"[{i+1}] Title: {item.get('title')} | Score: {score} | URL: {url}")
+
+        if not news_items:
+            raise RuntimeError("Hacker News 未返回可用文章")
         
         raw_text = "\n".join(news_items)
         
@@ -50,10 +65,16 @@ class AIDaily(commands.Cog):
             "2. 【🤖 开发者 AI 动态】：从列表中，重点筛选出与 AI 开发相关的干货（最多 10 条），例如：大模型发布、开源 AI 项目、机器学习工具更新等。\n\n"
             "重要要求：\n"
             "1. 每条新闻必须严格保留其对应的原始 URL 链接。\n"
-            "2. 请严格使用 Markdown 的链接语法，例如：`- [中文翻译标题](URL): 一句话简介`。"
+            "2. 每条内容必须以 `- ` 开头，严格使用 Markdown 链接语法，例如：`- [中文翻译标题](URL): 一句话简介`。\n"
+            "3. 绝对禁止使用 Markdown 表格，也不要使用 HTML 表格；只能使用标题和项目符号列表。\n"
+            "4. 只输出一份完整简报，禁止重复板块、重复标题或在后面重写第二版。"
         )
         
-        digest = await ai_client.ask_ai(raw_text, system=system_prompt)
+        digest = await ai_client.ask_ai(
+            raw_text,
+            system=system_prompt,
+            raise_on_failure=True,
+        )
         
         embed = create_ai_embed(
             title="🤖 AI 前沿工具快报 (每日更新) 🚀",
@@ -61,26 +82,33 @@ class AIDaily(commands.Cog):
             color=discord.Color.brand_green()
         )
         
-        await channel.send(embed=embed)
+        return embed
+
+    async def _run_daily(self, channel):
+        return await run_delivery_job(
+            lock=self._delivery_lock,
+            task_name="AI 资讯日报生成",
+            build=self._build_daily_embed,
+            deliver=lambda embed: channel.send(embed=embed),
+        )
 
     @tasks.loop(time=datetime.time(hour=8, minute=15, tzinfo=TZ))
     async def ai_news_daily(self):
-        print("执行 AI 资讯日报任务...")
+        logger.info("执行 AI 资讯日报任务")
         channel_id = settings.get_setting("NEWS_CHANNEL_ID")
         if not channel_id:
-            print("未设置 NEWS_CHANNEL_ID，跳过 AI 日报推送。")
+            logger.warning("未设置 NEWS_CHANNEL_ID，跳过 AI 日报推送")
             return
             
         channel = self.bot.get_channel(int(channel_id))
         if not channel:
-            print(f"找不到配置的频道 ID: {channel_id}")
+            logger.error("找不到配置的频道 ID: %s", channel_id)
             return
             
-        from core.utils import with_retry
         try:
-            await with_retry("AI 资讯日报", lambda: self._execute_daily(channel))
+            await self._run_daily(channel)
         except Exception:
-            pass # 错误已在 with_retry 中被记录
+            logger.exception("AI 资讯日报执行失败")
 
         
     @ai_news_daily.before_loop

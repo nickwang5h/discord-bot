@@ -1,5 +1,6 @@
 import re
 import asyncio
+import logging
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -8,8 +9,10 @@ import trafilatura
 from youtube_transcript_api import YouTubeTranscriptApi
 from core import ai_client
 from core.utils import create_ai_embed
+from core.web_fetcher import UnsafeUrlError, fetch_public_html
 
 URL_RE = re.compile(r"https?://\S+")
+logger = logging.getLogger(__name__)
 
 def extract_video_id(url):
     try:
@@ -53,18 +56,17 @@ async def fetch_and_summarize(url: str) -> tuple[bool, discord.Embed | str]:
                 )
                 text = " ".join([i.text for i in transcript_list])
         except Exception as e:
-            print(f"获取 YouTube 字幕失败: {e}")
+            logger.warning("获取 YouTube 字幕失败 [%s]: %s", video_id, e)
             return False, "❌ 无法获取该 YouTube 视频的字幕。可能该视频未提供可选字幕。"
     else:
         # 普通网页抓取
         try:
-            downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
-            if not downloaded:
-                return False, "❌ 无法抓取该网页的内容。"
-            
+            downloaded = await fetch_public_html(url)
             text = await asyncio.to_thread(trafilatura.extract, downloaded)
+        except UnsafeUrlError as error:
+            return False, f"❌ 无法抓取该链接：{error}。"
         except Exception as e:
-            print(f"网页抓取失败: {e}")
+            logger.warning("网页抓取失败 [%s]: %s", url, e)
             return False, "❌ 抓取网页内容时发生错误。"
 
     if not text or len(text) < 50:
@@ -87,12 +89,18 @@ async def fetch_and_summarize(url: str) -> tuple[bool, discord.Embed | str]:
         )
         return True, embed
     except Exception as e:
-        print(f"AI 总结失败: {e}")
+        logger.exception("AI 总结失败: %s", e)
         return False, "❌ AI 总结过程中发生未知错误。"
 
 class LinkSummary(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._summary_slots = asyncio.Semaphore(2)
+        self._auto_cooldowns = commands.CooldownMapping.from_cooldown(
+            1,
+            60.0,
+            commands.BucketType.user,
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -101,10 +109,15 @@ class LinkSummary(commands.Cog):
             
         urls = URL_RE.findall(message.content)
         if urls:
-            url = urls[0]
+            bucket = self._auto_cooldowns.get_bucket(message)
+            if bucket.update_rate_limit():
+                return
+
+            url = urls[0].rstrip(".,;:!?)]}>\"'")
             status_msg = await message.reply("👀 发现链接，正在抓取内容并总结...")
-            
-            success, result = await fetch_and_summarize(url)
+
+            async with self._summary_slots:
+                success, result = await fetch_and_summarize(url)
             
             if success:
                 await status_msg.edit(content=None, embed=result)
@@ -116,7 +129,8 @@ class LinkSummary(commands.Cog):
     async def summary(self, interaction: discord.Interaction, url: str):
         await interaction.response.send_message("👀 正在尝试获取内容并生成总结，请稍候...")
         
-        success, result = await fetch_and_summarize(url)
+        async with self._summary_slots:
+            success, result = await fetch_and_summarize(url)
         
         if success:
             await interaction.edit_original_response(content=f"**提取来源:** {url}", embed=result)
