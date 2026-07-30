@@ -26,10 +26,12 @@
 │   ├── news_cache.py          # 高级新闻缓存、批量去重和推送状态
 │   ├── data_ingester.py       # 高级新闻数据源定义与标准化
 │   ├── web_fetcher.py         # 网页大小/超时/跳转/内网访问限制
+│   ├── web_search.py          # 固定来源检索、证据限量与来源链接
 │   ├── logging_config.py      # 标准日志初始化
 │   └── utils.py               # Discord Embed 和 Markdown 表格转换
 ├── cogs/
 │   ├── ask.py                 # /ask
+│   ├── help.py                # 动态 /help 命令目录
 │   ├── link_summary.py        # 自动链接总结与 /summary
 │   ├── ai_daily.py            # Hacker News / AI 日报
 │   ├── news_digest.py         # 国际/加拿大/金融 RSS 日报
@@ -87,7 +89,7 @@ Groq、智谱和 OpenRouter 都使用 OpenAI-compatible Chat Completions 协议�
          ↓
   Gemini offline（最后兜底）
 
-联网生成（use_search=True）
+通用联网生成（use_search=True）
   Gemini Search
     ├─ 非限流失败且允许离线 → Gemini offline（一次）
     └─ 失败/cooldown/未配置
@@ -98,6 +100,32 @@ Groq、智谱和 OpenRouter 都使用 OpenAI-compatible Chat Completions 协议�
 普通问答、新闻 JSON 打分、日报整理和英文阅读都不需要模型自行联网，因此优先使用 Groq
 的 Qwen，把 Gemini 免费额度留给明确开启 Search 的请求。`fallback_offline=False` 的
 联网请求不会伪装成普通离线回答；Gemini Search 不可用时会直接报告联网服务不可用。
+
+`/ask` 使用一个可选的 `mode` 下拉参数，默认不消耗联网配额：
+
+```text
+Qwen 普通问答（默认）
+  └─ 普通生成链：Qwen → Zhipu → OpenRouter → Gemini offline
+
+Qwen 网页检索（低成本）
+  ├─ Google News RSS（最多 3 条）
+  └─ 中文 Wikipedia API（最多 2 条）
+       ↓
+     固定大小证据包（[S1]...，含原始 URL）
+       ↓
+     普通生成链，Qwen 优先
+       ↓
+     程序确定性附加“来源”链接
+
+Gemini 原生搜索
+  └─ Gemini Search（fallback_offline=False）
+```
+
+Qwen 网页检索与 Gemini 原生搜索互不自动切换：两个抓取源都无结果时，前者提示用户
+重试或主动选择 Gemini，不会自动花费 Google 配额；Gemini Search 不可用时也不会伪装
+成离线回答。新闻和百科事实来自抓取结果，模型只做归纳；网页材料被明确标记为不可信
+数据，不能覆盖 system instruction。Embed footer 始终显示实际 provider/model，基础
+生成链发生故障降级时不会把备用模型冒充成 Qwen。
 
 OpenRouter 当前内置节点：
 
@@ -170,6 +198,19 @@ Discord channel.send（单次）
 
 ## 7. 链接总结
 
+### 7.1 `/ask` 联网检索
+
+`core.web_search.search_web()` 只访问代码内固定的 Google News RSS 和中文 Wikipedia
+API，不接受用户提供目标主机。两者并发请求、共享 12 秒总超时，单个响应最大 1 MB；
+查询最多 300 字符，最终保留最多 3 条新闻和 2 条百科摘要。解析结果再次校验 HTTPS
+主机与路径，拒绝 Feed/API 中注入的第三方 URL。
+
+检索材料按 `[S1]` 编号交给模型，并要求最新事实不得由模型记忆补齐。来源列表由程序
+生成并为其预留 Discord Embed 字符预算，所以模型输出过长时优先截短回答而保留链接。
+单一抓取源失败只记录 warning，另一个来源仍可完成回答。
+
+### 7.2 指定链接总结
+
 普通网页经 `core.web_fetcher.fetch_public_html()` 下载：
 
 - 只允许 HTTP/HTTPS；
@@ -204,6 +245,11 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 
 日报 prompt 同时要求 bullet list、禁止表格和禁止生成第二版。Prompt 是第一层约束，确定性转换是第二层兜底。
 
+`/help` 不维护静态命令清单，而是在调用时读取 `bot.tree.get_commands()`；因此根级命令和
+所有已加载 Cog 命令会随启动同步自动出现。命令按描述前缀分为常用、开发工具、管理员
+和实验功能，单个字段遵守 Discord 的 1024 字符限制。帮助 Embed 仅对调用者可见，
+列出管理员命令不会绕过命令本身的权限检查。
+
 ## 10. 运维与自动化
 
 `/health` 是管理员专用、零模型调用的运行时诊断，展示：
@@ -220,7 +266,8 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 - Gemini key + model metadata；
 - Groq/OpenRouter 实时模型目录；
 - Discord bot token；
-- BBC/NPR RSS 抓取。
+- BBC/NPR RSS 抓取；
+- Google News/Wikipedia 联网问答抓取。
 
 `scripts/validate.py` 依次执行 compileall、核心回归测试、所有 Cog 加载/卸载测试和严格健康检查。`--live` 可用于 cron、systemd timer 或 CI。
 
@@ -231,7 +278,7 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 测试脚本统一放在 `scratch/`：
 
 - `test_core_services.py`：原子存储、密钥隔离、缓存去重/迁移、RSS UTC、退避、URL 安全、AIResult。
-- `test_extensions.py`：所有 Cog 的加载/卸载。
+- `test_extensions.py`：所有 Cog 的加载/卸载，以及 `/help` 动态命令覆盖和分类。
 - `test_regressions.py`：Gemini cooldown、provider fallback、高级新闻批次失败/启动行为、日报 single-flight/单次发送、表格转换。
 - 其他 `test_*.py`：按 provider 或数据源进行人工集成测试。
 

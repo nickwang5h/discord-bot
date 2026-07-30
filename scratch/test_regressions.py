@@ -11,8 +11,16 @@ from cogs.advanced_news import (
     _normalize_scored_items,
 )
 from cogs.ai_daily import AIDaily
+from cogs.ask import (
+    ASK_MODE_GEMINI_SEARCH,
+    ASK_MODE_QWEN,
+    ASK_MODE_QWEN_SEARCH,
+    Ask,
+    _answer_question,
+)
 from core import ai_client
 from core.ai_providers import AIResult
+from core.web_search import SearchSource
 from core.utils import create_ai_embed, normalize_markdown_tables
 
 
@@ -192,6 +200,84 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ai_client.AIServiceUnavailable):
                 await ai_client.ask_ai("hello", raise_on_failure=True)
+
+
+class AskSearchTests(unittest.IsolatedAsyncioTestCase):
+    def test_ask_command_exposes_three_answer_mode_choices(self):
+        mode_parameter = next(parameter for parameter in Ask.ask.parameters if parameter.name == "mode")
+
+        self.assertFalse(mode_parameter.required)
+        self.assertEqual(
+            [choice.value for choice in mode_parameter.choices],
+            [ASK_MODE_QWEN, ASK_MODE_QWEN_SEARCH, ASK_MODE_GEMINI_SEARCH],
+        )
+
+    async def test_search_results_are_grounded_by_qwen_without_gemini_search(self):
+        sources = [
+            SearchSource(
+                title="Latest update",
+                url="https://news.google.com/rss/articles/one",
+                snippet="Current facts",
+                kind="Google News",
+            )
+        ]
+        generate = AsyncMock(return_value=AIResult("基于材料的回答 [S1]", "Groq", "qwen/qwen3.6-27b"))
+        legacy_search = AsyncMock(side_effect=AssertionError("Gemini Search should not be called"))
+
+        with (
+            patch("cogs.ask.web_search.search_web", AsyncMock(return_value=sources)),
+            patch("cogs.ask.ai_client.generate_ai", generate),
+            patch("cogs.ask.ai_client.ask_ai", legacy_search),
+        ):
+            answer = await _answer_question("今天有什么新闻？", mode=ASK_MODE_QWEN_SEARCH)
+
+        self.assertIn("基于材料的回答 [S1]", answer)
+        self.assertIn("https://news.google.com/rss/articles/one", answer)
+        self.assertIn("<!--MODEL:Groq (qwen/qwen3.6-27b)-->", answer)
+        self.assertFalse(generate.await_args.kwargs["use_search"])
+        legacy_search.assert_not_awaited()
+
+    async def test_empty_qwen_web_results_do_not_spend_gemini_search_quota(self):
+        ask = AsyncMock(side_effect=AssertionError("Gemini Search should not be called"))
+
+        with (
+            patch("cogs.ask.web_search.search_web", AsyncMock(return_value=[])),
+            patch("cogs.ask.ai_client.ask_ai", ask),
+        ):
+            answer = await _answer_question("最新消息", mode=ASK_MODE_QWEN_SEARCH)
+
+        self.assertIn("网页检索暂不可用", answer)
+        ask.assert_not_awaited()
+
+    async def test_gemini_search_mode_bypasses_qwen_web_fetch_and_is_strict(self):
+        ask = AsyncMock(return_value="strict Gemini result")
+        fetch = AsyncMock(side_effect=AssertionError("Qwen web search should not run"))
+
+        with (
+            patch("cogs.ask.web_search.search_web", fetch),
+            patch("cogs.ask.ai_client.ask_ai", ask),
+        ):
+            answer = await _answer_question("最新消息", mode=ASK_MODE_GEMINI_SEARCH)
+
+        self.assertEqual(answer, "strict Gemini result")
+        self.assertTrue(ask.await_args.kwargs["use_search"])
+        self.assertFalse(ask.await_args.kwargs["fallback_offline"])
+        self.assertEqual(ask.await_args.kwargs["max_output_tokens"], 1600)
+        fetch.assert_not_awaited()
+
+    async def test_search_disabled_keeps_basic_qwen_routing(self):
+        ask = AsyncMock(return_value="basic result")
+        fetch = AsyncMock(side_effect=AssertionError("web search should not run"))
+
+        with (
+            patch("cogs.ask.web_search.search_web", fetch),
+            patch("cogs.ask.ai_client.ask_ai", ask),
+        ):
+            answer = await _answer_question("解释量子纠缠", mode=ASK_MODE_QWEN)
+
+        self.assertEqual(answer, "basic result")
+        self.assertFalse(ask.await_args.kwargs["use_search"])
+        fetch.assert_not_awaited()
 
 
 class AdvancedNewsAnalysisTests(unittest.IsolatedAsyncioTestCase):

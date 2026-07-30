@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import aiohttp
 
 from config import DISCORD_TOKEN
-from core import ai_client, settings
+from core import ai_client, settings, web_search
 from core.feeds import FeedSource, fetch_feed
 
 
@@ -181,6 +181,19 @@ async def run_live_checks(report: Report) -> None:
         report.warn(f"部分 RSS 可用（{', '.join(healthy)}）")
     else:
         report.error("RSS 抓取器无法读取测试源")
+
+    try:
+        sources = await web_search.search_web("人工智能")
+        kinds = {source.kind for source in sources}
+        expected = {"Google News", "Wikipedia"}
+        if kinds == expected:
+            report.ok("联网问答抓取可用（Google News, Wikipedia）")
+        elif kinds:
+            report.warn(f"联网问答部分抓取可用（{', '.join(sorted(kinds))}）")
+        else:
+            report.error("联网问答未从 Google News 或 Wikipedia 取得结果")
+    except Exception as error:
+        report.error(f"联网问答抓取检查失败: {error}")
 
 
 async def main() -> int:

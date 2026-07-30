@@ -10,6 +10,7 @@ from discord.ext import commands
 from config import PROJECT_ROOT
 from core import news_cache
 from core.storage import JsonStore
+from cogs.help import _build_help_embed
 
 
 class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
@@ -33,10 +34,37 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                     for extension in extensions:
                         await bot.load_extension(extension)
                     self.assertEqual(set(bot.extensions), set(extensions))
+
+                    embed = _build_help_embed(bot.tree.get_commands())
+                    rendered = "\n".join(field.value for field in embed.fields)
+                    for command in bot.tree.get_commands():
+                        self.assertIn(f"`/{command.name}`", rendered)
                 finally:
                     for extension in list(bot.extensions):
                         await bot.unload_extension(extension)
                     await bot.close()
+
+    async def test_help_groups_commands_by_audience(self):
+        class FakeCommand:
+            def __init__(self, name: str, description: str):
+                self.name = name
+                self.qualified_name = name
+                self.description = description
+
+        embed = _build_help_embed(
+            [
+                FakeCommand("ask", "向 AI 提问任何问题"),
+                FakeCommand("debug", "[Dev] 分析错误日志"),
+                FakeCommand("health", "[管理员] 查看健康状态"),
+                FakeCommand("test_fetch", "[实验] 手动抓取"),
+            ]
+        )
+
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertIn("`/ask`", fields["常用命令"])
+        self.assertIn("`/debug`", fields["开发工具"])
+        self.assertIn("`/health`", fields["管理员命令"])
+        self.assertIn("`/test_fetch`", fields["实验功能"])
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 
 ## 主要能力
 
-- 按能力路由：普通生成优先 Groq/Qwen，明确联网时优先 Gemini Search，并保留多节点降级。
+- 按能力路由：`/ask` 可选普通 Qwen、Qwen 网页检索或 Gemini 原生搜索；默认使用低成本 Qwen。
 - 低成本新闻：RSS/Hacker News 负责事实输入，模型只负责筛选和整理。
 - 稳定日报：抓取与生成可以重试，Discord 发送至多一次；并发触发会自动跳过。
 - 格式兜底：模型生成的 Markdown 表格会自动转换为 Discord 可读的项目符号。
@@ -24,7 +24,8 @@
 │   ├── storage.py            # 原子 JSON 存储
 │   ├── settings.py           # 普通设置与本地密钥分离
 │   ├── news_cache.py         # 高级新闻去重与缓存
-│   └── web_fetcher.py        # 安全、限量的网页抓取
+│   ├── web_fetcher.py        # 安全、限量的指定网页抓取
+│   └── web_search.py         # Google News/Wikipedia 检索与来源格式化
 ├── cogs/                     # Discord 命令与定时业务
 ├── scripts/
 │   ├── healthcheck.py        # 零 token 配置/在线健康检查
@@ -118,7 +119,8 @@ python scripts/validate.py --live
 
 ## 主要命令
 
-- `/ask`：AI 问答，可选 Gemini Search。
+- `/ask`：AI 问答，下拉选择 `Qwen 普通问答`、`Qwen 网页检索` 或 `Gemini 原生搜索`。
+- `/help`：动态列出当前加载的全部 slash commands，并区分常用、开发、管理员和实验功能。
 - `/summary`：总结网页或 YouTube 字幕。
 - `/recipe`：按已有食材生成菜谱。
 - `/fx`：查询 CAD 对 USD/CNY 汇率。
