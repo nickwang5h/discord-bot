@@ -61,6 +61,9 @@ GEMINI_MODEL=gemini-3.6-flash
 ZHIPU_API_KEY=...
 OPENROUTER_API_KEY=...
 
+# Wikipedia API 身份标识；只在部署环境填写，不要提交真实邮箱
+BOT_CONTACT_EMAIL=your-email@example.com
+
 BOT_TIMEZONE=America/Toronto
 LOG_LEVEL=INFO
 ```
@@ -76,6 +79,7 @@ python bot.py
 - `settings.json`：频道 ID、模型偏好等非敏感设置，可提交到 Git。
 - `.env`：部署环境密钥，已被 Git 忽略。
 - `data/secrets.json`：通过 `/set_gemini_key` 保存的本地密钥，已被 Git 忽略。
+- `BOT_CONTACT_EMAIL`：Wikimedia 要求的机器人联系方式，只随 Wikipedia API 请求发送；日志和健康检查不会显示其值。
 - `/set_news_channel`、`/set_test_news_channel`、`/set_reading_channel`：设置推送频道。
 - `/set_model`：切换 Gemini 模型。
 - `/health`：管理员查看 provider、定时任务、频道和 cooldown 状态。

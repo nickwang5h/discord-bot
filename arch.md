@@ -204,6 +204,12 @@ API，不接受用户提供目标主机。两者并发请求、共享 12 秒总�
 查询最多 300 字符，最终保留最多 3 条新闻和 2 条百科摘要。解析结果再次校验 HTTPS
 主机与路径，拒绝 Feed/API 中注入的第三方 URL。
 
+Wikipedia 请求从 Git 忽略的 `.env`/部署环境读取 `BOT_CONTACT_EMAIL`，生成
+`JonathanDiscordBot/1.0 (mailto:...)` User-Agent，以满足 Wikimedia 客户端身份要求。
+邮箱只添加到 Wikipedia 单次请求，不发送给 Google News，也不写入日志、公开设置或
+健康检查输出。缺失、占位、非法格式或包含换行时会跳过 Wikipedia，并记录不含邮箱值
+的配置 warning；Google News 仍可独立工作。
+
 检索材料按 `[S1]` 编号交给模型，并要求最新事实不得由模型记忆补齐。来源列表由程序
 生成并为其预留 Discord Embed 字符预算，所以模型输出过长时优先截短回答而保留链接。
 单一抓取源失败只记录 warning，另一个来源仍可完成回答。
@@ -230,6 +236,9 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 - `data/news_cache.json`：新闻缓存，Git 忽略。
 - `data/secrets.json`：slash command 保存的本地密钥，Git 忽略。
 - `.env`：部署密钥，Git 忽略。
+
+`BOT_CONTACT_EMAIL` 也存放在 `.env` 或托管平台的私密环境变量中。虽然它不是 API
+密钥，但属于运营者个人信息，仓库中的 `.env.example` 只保留空占位符。
 
 `get_secret()` 优先读取本地 secret store，再读取环境变量，最后兼容旧版本曾写入 `settings.json` 的密钥。再次保存密钥时会删除旧的公共设置项。
 
@@ -262,6 +271,7 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 
 - Python/JSON/channel 配置；
 - 至少一个 AI provider；
+- Wikipedia 联系邮箱是否有效（只报告状态，不显示值）；
 - Gemini key + model metadata；
 - Groq/OpenRouter 实时模型目录；
 - Discord bot token；

@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 import aiohttp
 import feedparser
 
+from config import get_env
+
 logger = logging.getLogger(__name__)
 
 WIKIPEDIA_API = "https://zh.wikipedia.org/w/api.php"
@@ -20,6 +22,12 @@ MAX_SNIPPET_CHARS = 700
 MAX_TITLE_CHARS = 180
 MAX_URL_CHARS = 800
 USER_AGENT = "JonathanDiscordBot/1.0 (+grounded web search)"
+CONTACT_EMAIL_ENV = "BOT_CONTACT_EMAIL"
+EMAIL_PATTERN = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +37,32 @@ class SearchSource:
     snippet: str
     kind: str
     published_at: str | None = None
+
+
+class WikipediaContactError(ValueError):
+    """Raised when Wikimedia contact identification is missing or unsafe."""
+
+
+def _build_wikipedia_user_agent(contact_email: str) -> str:
+    email = str(contact_email or "").strip()
+    if (
+        not email
+        or email == "your_contact_email_here"
+        or len(email) > 254
+        or not EMAIL_PATTERN.fullmatch(email)
+    ):
+        raise WikipediaContactError(
+            f"未配置有效的 {CONTACT_EMAIL_ENV}，已跳过 Wikipedia"
+        )
+    return f"JonathanDiscordBot/1.0 (mailto:{email})"
+
+
+def wikipedia_contact_configured() -> bool:
+    try:
+        _build_wikipedia_user_agent(get_env(CONTACT_EMAIL_ENV) or "")
+    except WikipediaContactError:
+        return False
+    return True
 
 
 class _TextExtractor(HTMLParser):
@@ -199,6 +233,7 @@ async def _fetch_wikipedia(
     session: aiohttp.ClientSession,
     query: str,
 ) -> list[SearchSource]:
+    user_agent = _build_wikipedia_user_agent(get_env(CONTACT_EMAIL_ENV) or "")
     params = {
         "action": "query",
         "generator": "search",
@@ -213,7 +248,11 @@ async def _fetch_wikipedia(
         "formatversion": 2,
         "origin": "*",
     }
-    async with session.get(WIKIPEDIA_API, params=params) as response:
+    async with session.get(
+        WIKIPEDIA_API,
+        params=params,
+        headers={"User-Agent": user_agent},
+    ) as response:
         body = await _read_limited(response)
     return _parse_wikipedia_payload(json.loads(body.decode("utf-8")), max_items=2)
 

@@ -66,6 +66,13 @@ def run_offline_checks(report: Report, *, strict: bool) -> None:
     else:
         report.warn("没有配置任何 AI provider")
 
+    if web_search.wikipedia_contact_configured():
+        report.ok("BOT_CONTACT_EMAIL 已配置（值已隐藏）")
+    elif strict:
+        report.error("BOT_CONTACT_EMAIL 未配置或格式无效，Wikipedia 检索将被跳过")
+    else:
+        report.warn("BOT_CONTACT_EMAIL 未配置或格式无效，Wikipedia 检索将被跳过")
+
     for key in ("NEWS_CHANNEL_ID", "TEST_NEWS_CHANNEL_ID", "READING_CHANNEL_ID"):
         value = settings.get_setting(key)
         if value is None:
