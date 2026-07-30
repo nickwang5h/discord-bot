@@ -41,8 +41,7 @@
 │   └── ...                    # 设置、生活和开发工具
 ├── scripts/
 │   ├── healthcheck.py         # 零生成 token 健康检查
-│   └── validate.py            # 编译 + 测试 + 健康检查
-└── scratch/                   # 回归和集成测试
+│   └── validate.py            # 编译 + 可选本地测试 + 健康检查
 ```
 
 ## 3. 启动生命周期
@@ -269,18 +268,18 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 - BBC/NPR RSS 抓取；
 - Google News/Wikipedia 联网问答抓取。
 
-`scripts/validate.py` 依次执行 compileall、核心回归测试、所有 Cog 加载/卸载测试和严格健康检查。`--live` 可用于 cron、systemd timer 或 CI。
+`scripts/validate.py` 依次执行 compileall、可用的本地回归测试和严格健康检查。
+本地若存在被 Git 忽略的 `scratch/`，脚本会自动运行其中的核心回归模块；全新 clone
+和 CI 不依赖该目录。`--live` 可用于 cron、systemd timer 或 CI。
 
 `.github/workflows/validate.yml` 在 push/pull request 上使用 Python 3.13 运行验证；CI 不持有部署密钥，因此使用 `--allow-missing-secrets`，密钥与在线 provider 检查留给部署环境的 live healthcheck。
 
-## 11. 测试策略
+## 11. 本地测试策略
 
-测试脚本统一放在 `scratch/`：
-
-- `test_core_services.py`：原子存储、密钥隔离、缓存去重/迁移、RSS UTC、退避、URL 安全、AIResult。
-- `test_extensions.py`：所有 Cog 的加载/卸载，以及 `/help` 动态命令覆盖和分类。
-- `test_regressions.py`：Gemini cooldown、provider fallback、高级新闻批次失败/启动行为、日报 single-flight/单次发送、表格转换。
-- 其他 `test_*.py`：按 provider 或数据源进行人工集成测试。
+`scratch/` 是被 Git 忽略的本地工作目录，不属于机器人仓库或 CI 输入。开发环境可在其中
+保留回归测试、人工集成脚本和临时诊断；`scripts/validate.py` 会自动运行存在的
+`test_core_services.py`、`test_extensions.py` 和 `test_regressions.py`，目录不存在时
+则只执行仓库内的编译与健康检查。
 
 ## 12. 当前限制
 

@@ -24,17 +24,23 @@ def main() -> int:
 
     commands = [
         [sys.executable, "-m", "compileall", "-q", "bot.py", "config.py", "core", "cogs", "scripts"],
-        [
-            sys.executable,
-            "-m",
-            "unittest",
-            "-v",
-            "scratch.test_core_services",
-            "scratch.test_extensions",
-            "scratch.test_regressions",
-        ],
-        [sys.executable, "scripts/healthcheck.py"],
     ]
+    local_test_modules = [
+        "scratch.test_core_services",
+        "scratch.test_extensions",
+        "scratch.test_regressions",
+    ]
+    available_test_modules = [
+        module
+        for module in local_test_modules
+        if (PROJECT_ROOT / f"{module.replace('.', '/')}.py").is_file()
+    ]
+    if available_test_modules:
+        commands.append(
+            [sys.executable, "-m", "unittest", "-v", *available_test_modules]
+        )
+
+    commands.append([sys.executable, "scripts/healthcheck.py"])
     if not args.allow_missing_secrets:
         commands[-1].append("--strict")
     if args.live:

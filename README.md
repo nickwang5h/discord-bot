@@ -29,8 +29,7 @@
 ├── cogs/                     # Discord 命令与定时业务
 ├── scripts/
 │   ├── healthcheck.py        # 零 token 配置/在线健康检查
-│   └── validate.py           # 编译、测试、健康检查总入口
-└── scratch/                  # 回归与集成测试
+│   └── validate.py           # 编译、可选本地测试、健康检查总入口
 ```
 
 更完整的数据流和架构决策见 [`arch.md`](arch.md)。
@@ -108,6 +107,9 @@ python scripts/validate.py
 ```bash
 python scripts/validate.py --live
 ```
+
+本地若存在被 Git 忽略的 `scratch/` 测试，验证脚本会自动运行其中的核心回归模块；
+仓库和 CI 不依赖该本地目录。
 
 在线检查只读取 Discord 身份、模型目录和测试 RSS，不执行模型生成，因此不会消耗 LLM token。脚本会用退出码表示成功或失败，适合 cron、systemd timer 或 CI：
 
