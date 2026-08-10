@@ -51,10 +51,12 @@
 │   └── ...                    # 设置、生活和开发工具
 ├── scripts/
 │   ├── healthcheck.py         # 零生成 token 健康检查
-│   ├── deploy_vps.sh          # 通过 Tailscale SSH 触发 VPS 部署
+│   ├── deploy_vps.sh          # 兼容的一键部署入口
+│   ├── vps.sh                 # 部署、状态、日志、健康、配置和回滚 CLI
 │   └── validate.py            # 编译 + 跟踪的行为测试 + 健康检查
+├── docs/vps-deployment.md     # VPS 日常操作与故障处理说明
 ├── tests/                     # clean clone 和 CI 必跑的离线行为回归
-└── ops/vps/                   # Dockerfile、Compose、部署与镜像回滚脚本
+└── ops/vps/                   # Dockerfile、Compose、远端部署与镜像回滚脚本
 ```
 
 ## 3. 启动生命周期
@@ -317,7 +319,9 @@ B站标准 BV 链接和 `b23.tv` 短链接由 `core.bilibili_transcript` 处理�
 
 VPS 运行形态是单个、无入站端口的 Docker Compose 服务。镜像固定 Python 3.13 patch 版本和基础镜像 digest，以非 root 用户、只读根文件系统、drop-all capabilities、资源上限和轮转日志运行；持久状态只挂载到 `/var/lib/discord-bot`。Bot 不加入 Caddy 的 `infra-edge` 网络。Docker `unless-stopped` 负责进程崩溃与宿主机重启恢复，容器 healthcheck 运行严格离线检查。
 
-`ops/vps/deploy.sh` 只接受 clean `main` checkout，以 Git SHA 构建镜像并串行切换；候选必须通过容器健康和 Discord Gateway ready 日志，否则恢复上一镜像。`rollback.sh` 只切换到 VPS 上仍存在的旧 SHA 镜像，不改写持久状态。部署仍是单实例短暂停机切换，不采用多副本滚动发布。
+`scripts/vps.sh` 是本地日常运维入口，从环境变量、mode `600` 的用户配置文件或 SSH alias 解析 Tailscale SSH 目标，提供部署、状态、离线健康、日志、远端密钥编辑、镜像列表和回滚；目标与密钥不写入仓库。`deploy_vps.sh` 仅保留为兼容的一键部署别名。
+
+远端 `ops/vps/deploy.sh` 只接受 clean `main` checkout，以 Git SHA 构建镜像并串行切换；候选必须通过容器健康和 Discord Gateway ready 日志，否则恢复上一镜像。`rollback.sh` 只切换到 VPS 上仍存在的旧 SHA 镜像，不改写持久状态。部署仍是单实例短暂停机切换，不采用多副本滚动发布。
 
 Agent Toolkit 基线以根 `AGENTS.md` 为唯一项目契约，`.agents/AGENTS.md` 和
 `.agents/rules/project-guidance.md` 只负责路由，不复制另一套规则。Toolkit 只拥有

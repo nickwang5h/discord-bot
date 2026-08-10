@@ -143,13 +143,13 @@ BOT_ENABLE_SCHEDULED_JOBS=false
 
 确认 Gateway、`/ping` 和手动功能后再改为 `true`。部署前必须先停止使用同一 Token 的本地实例，项目只支持单进程 at-most-once 语义。
 
-VPS checkout 和私密环境准备完成后，可从本地通过 Tailscale SSH 执行：
+完成一次性 SSH 目标配置后，日常部署只需：
 
 ```bash
-DISCORD_BOT_SSH_TARGET=user@tailscale-host ./scripts/deploy_vps.sh
+./scripts/vps.sh deploy
 ```
 
-部署脚本拒绝 dirty checkout 和并行部署，执行 fast-forward 更新、缓存构建、容器健康检查与 Gateway ready 检查；失败时恢复上一镜像。显式回滚使用 VPS 上的 `ops/vps/rollback.sh <git-tag>`，不会改写持久状态。真实密钥的创建、迁移和备份必须由 owner 在 VPS 私密路径中完成。
+同一入口还提供 `status`、`health`、`logs`、`env`、`images` 和 `rollback`。部署脚本拒绝 dirty checkout 和并行部署，执行 fast-forward 更新、缓存构建、容器健康检查与 Gateway ready 检查；失败时恢复上一镜像，且不会改写持久状态。完整配置、常用命令、密钥编辑和故障处理见 [`docs/vps-deployment.md`](docs/vps-deployment.md)。
 
 ## 主要命令
 
