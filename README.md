@@ -64,6 +64,9 @@ OPENROUTER_API_KEY=...
 # Wikipedia API 身份标识；只在部署环境填写，不要提交真实邮箱
 BOT_CONTACT_EMAIL=your-email@example.com
 
+# 可选；部分 B站字幕需要登录态，建议只使用专用低权限账号
+BILIBILI_COOKIE=...
+
 BOT_TIMEZONE=America/Toronto
 LOG_LEVEL=INFO
 ```
@@ -80,6 +83,7 @@ python bot.py
 - `.env`：部署环境密钥，已被 Git 忽略。
 - `data/secrets.json`：通过 `/set_gemini_key` 保存的本地密钥，已被 Git 忽略。
 - `BOT_CONTACT_EMAIL`：Wikimedia 要求的机器人联系方式，只随 Wikipedia API 请求发送；日志和健康检查不会显示其值。
+- `BILIBILI_COOKIE`：可选的 B站登录态，建议使用专用低权限账号；只发送给固定 Bilibili API，绝不提交或写入日志。
 - `/set_news_channel`、`/set_test_news_channel`、`/set_reading_channel`：设置推送频道。
 - `/set_model`：切换 Gemini 模型。
 - `/health`：管理员查看 provider、定时任务、频道和 cooldown 状态。
@@ -127,7 +131,7 @@ python scripts/validate.py --live
 
 - `/ask`：AI 问答，下拉选择 `Qwen 普通问答`、`Qwen 网页检索` 或 `Gemini 原生搜索`。Qwen 检索会保留原问题，并由低成本模型补充一个等价英文查询；中英文材料统一整理为中文回答。
 - `/help`：动态列出当前加载的全部 slash commands，并区分常用、开发、管理员和实验功能。
-- `/summary`：总结网页或 YouTube 字幕。
+- `/summary`：总结网页、YouTube 字幕或 B站视频字幕。
 - `/recipe`：按已有食材生成菜谱。
 - `/fx`：查询 CAD 对 USD/CNY 汇率。
 - `/explain`、`/vs`、`/regex`、`/debug`：开发者工具。

@@ -15,7 +15,11 @@ env/
 .venv/
 
 # IDEs and Editors
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/zsh/
+.vscode/zsh/*
+!.vscode/zsh/.zshrc
 .idea/
 *.swp
 *.swo
@@ -32,3 +36,51 @@ data/
 
 # Local scratch work and integration experiments
 scratch/
+
+# >>> bootstrap-personal-project
+# Operating-system and editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node.js and common build output
+node_modules/
+dist/
+build/
+coverage/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Local database sidecars
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.duckdb.wal
+
+# Project-local VS Code zsh runtime state; keep .zshrc tracked.
+/.vscode/zsh/.zcompdump*
+/.vscode/zsh/.zsh_history*
+/.vscode/zsh/.zsh_sessions/
+# <<< bootstrap-personal-project

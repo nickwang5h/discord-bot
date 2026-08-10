@@ -1,0 +1,20 @@
+{
+  "files.exclude": {
+    "**/.codex": false,
+    "**/.agents": false,
+    "**/__pycache__": true,
+    "**/*.pyc": true
+  },
+  "terminal.integrated.profiles.linux": {
+    "Project zsh": {
+      "path": "/bin/zsh",
+      "args": ["-l"],
+      "env": {
+        "ZDOTDIR": "${workspaceFolder}/.vscode/zsh",
+        "PROJECT_WORKSPACE_ROOT": "${workspaceFolder}"
+      }
+    }
+  },
+  "terminal.integrated.defaultProfile.linux": "Project zsh",
+  "terminal.integrated.cwd": "${workspaceFolder}"
+}

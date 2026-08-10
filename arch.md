@@ -14,6 +14,12 @@
 
 ```text
 /discord-bot
+├── AGENTS.md                  # 跨工具共享的规范与验证入口
+├── .agents/
+│   ├── rules/project-guidance.md  # Antigravity 到根 AGENTS.md 的桥接
+│   └── skills/                # 架构维护与实时外部事实验证 Skill
+├── .editorconfig              # 编辑器格式基线
+├── .gitattributes             # 跨平台换行约束
 ├── bot.py                     # Bot 生命周期、扩展加载、命令同步和全局错误处理
 ├── config.py                  # 根目录、时区、日志级别和环境变量
 ├── core/
@@ -26,6 +32,7 @@
 │   ├── news_cache.py          # 高级新闻缓存、批量去重和推送状态
 │   ├── data_ingester.py       # 高级新闻数据源定义与标准化
 │   ├── web_fetcher.py         # 网页大小/超时/跳转/内网访问限制
+│   ├── bilibili_transcript.py # B站固定 API 字幕获取、短链校验与标准化
 │   ├── web_search.py          # 固定来源检索、证据限量与来源链接
 │   ├── logging_config.py      # 标准日志初始化
 │   └── utils.py               # Discord Embed 和 Markdown 表格转换
@@ -234,6 +241,16 @@ Wikipedia 请求从 Git 忽略的 `.env`/部署环境读取 `BOT_CONTACT_EMAIL`�
 
 YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视频媒体。
 
+B站标准 BV 链接和 `b23.tv` 短链接由 `core.bilibili_transcript` 处理。短链接最多进行
+3 次手动跳转，并要求最终地址属于固定 Bilibili 主机；视频信息、播放器字幕列表和字幕
+正文分别通过固定 API/字幕 CDN 获取，响应大小分别限制为 1 MB、1 MB 和 5 MB，不下载
+视频或音频。最长视频为 90 分钟，字幕请求全局串行执行且不自动重试。优先选择创作者
+中文字幕，其次选择 `ai-zh` 自动字幕，最后尝试英文字幕。可选 `BILIBILI_COOKIE` 从私密设置或环境变量
+读取，仅添加到 Bilibili API 请求，不写入日志；未配置时先尝试匿名访问。
+
+网页正文、YouTube 字幕和 B站字幕在送入模型时都明确标记为不可信数据，正文中的命令、
+提示词或角色设定不能覆盖摘要系统指令。所有来源仍统一截断到 20,000 字符。
+
 ## 8. 存储与密钥
 
 `core.storage.JsonStore` 使用进程内 `RLock` 和同目录临时文件 + `os.replace`，避免写入中断造成半个 JSON 文件。
@@ -245,6 +262,8 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 
 `BOT_CONTACT_EMAIL` 也存放在 `.env` 或托管平台的私密环境变量中。虽然它不是 API
 密钥，但属于运营者个人信息，仓库中的 `.env.example` 只保留空占位符。
+`BILIBILI_COOKIE` 同样只能进入 Git 忽略的本地 secret store、`.env` 或部署环境；它不
+进入公开设置、日志或摘要结果。
 
 `get_secret()` 优先读取本地 secret store，再读取环境变量，最后兼容旧版本曾写入 `settings.json` 的密钥。再次保存密钥时会删除旧的公共设置项。
 
@@ -290,6 +309,16 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 
 `.github/workflows/validate.yml` 在 push/pull request 上使用 Python 3.13 运行验证；CI 不持有部署密钥，因此使用 `--allow-missing-secrets`，密钥与在线 provider 检查留给部署环境的 live healthcheck。
 
+Agent Toolkit 基线以根 `AGENTS.md` 为唯一项目契约，`.agents/AGENTS.md` 和
+`.agents/rules/project-guidance.md` 只负责路由，不复制另一套规则。Toolkit 只拥有
+`.gitignore` 中标记的 bootstrap block；项目原有的 `data/`、`scratch/` 和可跟踪 VS Code
+配置规则继续由本仓库维护。WSL VS Code 终端通过跟踪的 `.vscode/zsh/.zshrc` 恢复用户
+`ZDOTDIR`，避免 history/completion 状态写入仓库。
+
+Personal Ops 使用项目 ID `discord-bot` 和规范路径 `/root/Projects/discord-bot` 观察 Git
+元数据；它不替代本仓库测试、运行健康或部署证据。其生成 Markdown 是派生视图，不能从本
+仓库任务中直接编辑。
+
 ## 11. 本地测试策略
 
 `scratch/` 是被 Git 忽略的本地工作目录，不属于机器人仓库或 CI 输入。开发环境可在其中
@@ -303,3 +332,5 @@ YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视�
 - JSON Store 适合个人/小社区机器人，不适合多进程高并发写入。
 - 网页目标会在请求前验证 DNS 和每个 redirect；它降低常见 SSRF 风险，但不替代独立网络沙箱。
 - 免费模型和 RSS 源会变化，应定期运行 live healthcheck。
+- 行为回归测试当前位于被忽略的 `scratch/`；干净 clone 和 CI 只执行编译及离线配置健康
+  检查，因此 CI 尚不能证明 provider fallback、delivery 和 B站字幕等行为回归。
