@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.vscode
+.env
+.env.*
+!.env.example
+.venv
+venv
+__pycache__
+*.py[cod]
+data
+scratch
+tests
+*.log
+*.tmp

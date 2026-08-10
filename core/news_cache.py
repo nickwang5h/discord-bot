@@ -2,12 +2,12 @@ import logging
 import time
 from typing import Any
 
-from config import PROJECT_ROOT
+from config import STATE_ROOT
 from core.storage import JsonStore
 
 logger = logging.getLogger(__name__)
 
-CACHE_FILE = PROJECT_ROOT / "data" / "news_cache.json"
+CACHE_FILE = STATE_ROOT / "data" / "news_cache.json"
 MAX_CACHE_SIZE = 150
 _cache_store = JsonStore(CACHE_FILE, list)
 CURRENT_SCORE_FIELDS = frozenset(

@@ -3,7 +3,7 @@ import logging
 from discord.ext import commands, tasks
 import discord
 import asyncio
-from config import TZ
+from config import SCHEDULED_JOBS_ENABLED, TZ
 from core import settings, ai_client
 from core.feeds import FeedSource, fetch_feeds
 from core.jobs import run_delivery_job
@@ -15,7 +15,10 @@ class NewsDigest(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._delivery_lock = asyncio.Lock()
-        self.daily.start()
+        if SCHEDULED_JOBS_ENABLED:
+            self.daily.start()
+        else:
+            logger.info("综合新闻定时任务已通过部署配置禁用")
 
     def cog_unload(self):
         self.daily.cancel()

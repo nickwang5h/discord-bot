@@ -3,7 +3,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from config import DISCORD_TOKEN, LOG_LEVEL, PROJECT_ROOT
+from config import BOT_RELEASE, DISCORD_TOKEN, LOG_LEVEL, PROJECT_ROOT
 from core.logging_config import configure_logging
 
 configure_logging(LOG_LEVEL)
@@ -31,7 +31,12 @@ class DiscordBot(commands.Bot):
             logger.exception("斜杠命令同步失败")
 
     async def on_ready(self) -> None:
-        logger.info("机器人已上线: %s (guilds=%s)", self.user, len(self.guilds))
+        logger.info(
+            "机器人已上线: %s (guilds=%s, release=%s)",
+            self.user,
+            len(self.guilds),
+            BOT_RELEASE,
+        )
 
 
 intents = discord.Intents.default()

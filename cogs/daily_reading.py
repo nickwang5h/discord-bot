@@ -3,7 +3,7 @@ import logging
 from discord.ext import commands, tasks
 import discord
 import asyncio
-from config import TZ
+from config import SCHEDULED_JOBS_ENABLED, TZ
 from core import settings, ai_client
 from core.feeds import FeedSource, fetch_feed
 from core.jobs import RetryPolicy, retry_async
@@ -16,7 +16,10 @@ class DailyReading(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._delivery_lock = asyncio.Lock()
-        self.reading_loop.start()
+        if SCHEDULED_JOBS_ENABLED:
+            self.reading_loop.start()
+        else:
+            logger.info("每日英文阅读定时任务已通过部署配置禁用")
 
     def cog_unload(self):
         self.reading_loop.cancel()

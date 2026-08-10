@@ -7,7 +7,7 @@ import re
 import discord
 from discord.ext import commands, tasks
 
-from config import TZ
+from config import SCHEDULED_JOBS_ENABLED, TZ
 from core import settings, ai_client, news_cache, data_ingester
 from core.jobs import run_delivery_job
 from core.utils import create_ai_embed
@@ -85,8 +85,11 @@ class AdvancedNews(commands.Cog):
         removed = news_cache.prune_legacy_items()
         if removed:
             logger.info("[Advanced News] 已清理 %s 条旧版或无效缓存记录", removed)
-        self.hourly_fetch.start()
-        self.scheduled_digest.start()
+        if SCHEDULED_JOBS_ENABLED:
+            self.hourly_fetch.start()
+            self.scheduled_digest.start()
+        else:
+            logger.info("[Advanced News] 自动抓取和定时精读已通过部署配置禁用")
 
     def cog_unload(self):
         self.hourly_fetch.cancel()

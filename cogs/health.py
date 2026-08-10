@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from config import BOT_RELEASE, SCHEDULED_JOBS_ENABLED
 from core import ai_client, settings
 
 
@@ -36,6 +37,8 @@ class Health(commands.Cog):
             loop = getattr(cog, attr_name, None) if cog else None
             if loop is None:
                 task_lines.append(f"- {label}: ❌ 未加载")
+            elif not SCHEDULED_JOBS_ENABLED:
+                task_lines.append(f"- {label}: ⏸️ 部署配置禁用")
             elif loop.failed():
                 task_lines.append(f"- {label}: ❌ 已停止")
             elif loop.is_running():
@@ -51,7 +54,10 @@ class Health(commands.Cog):
 
         embed = discord.Embed(
             title="🩺 Bot Health",
-            description=f"Gateway latency: `{round(self.bot.latency * 1000)}ms`",
+            description=(
+                f"Gateway latency: `{round(self.bot.latency * 1000)}ms`\n"
+                f"Release: `{BOT_RELEASE}`"
+            ),
             color=discord.Color.green(),
         )
         embed.add_field(name="AI Providers", value="\n".join(provider_lines), inline=False)

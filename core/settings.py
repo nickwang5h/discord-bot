@@ -1,11 +1,11 @@
 import os
 from typing import Any
 
-from config import PROJECT_ROOT
+from config import STATE_ROOT
 from core.storage import JsonStore
 
-SETTINGS_FILE = PROJECT_ROOT / "settings.json"
-SECRETS_FILE = PROJECT_ROOT / "data" / "secrets.json"
+SETTINGS_FILE = STATE_ROOT / "settings.json"
+SECRETS_FILE = STATE_ROOT / "data" / "secrets.json"
 
 _settings_store = JsonStore(SETTINGS_FILE, dict)
 _secrets_store = JsonStore(SECRETS_FILE, dict)

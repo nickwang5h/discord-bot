@@ -20,6 +20,9 @@
 │   └── skills/                # 架构维护与实时外部事实验证 Skill
 ├── .editorconfig              # 编辑器格式基线
 ├── .gitattributes             # 跨平台换行约束
+├── .python-version            # 本地、CI 和部署统一使用 Python 3.13
+├── requirements.txt           # 直接依赖范围
+├── requirements.lock          # 带 hash 的完整可复现依赖图
 ├── bot.py                     # Bot 生命周期、扩展加载、命令同步和全局错误处理
 ├── config.py                  # 根目录、时区、日志级别和环境变量
 ├── core/
@@ -48,7 +51,10 @@
 │   └── ...                    # 设置、生活和开发工具
 ├── scripts/
 │   ├── healthcheck.py         # 零生成 token 健康检查
-│   └── validate.py            # 编译 + 可选本地测试 + 健康检查
+│   ├── deploy_vps.sh          # 通过 Tailscale SSH 触发 VPS 部署
+│   └── validate.py            # 编译 + 跟踪的行为测试 + 健康检查
+├── tests/                     # clean clone 和 CI 必跑的离线行为回归
+└── ops/vps/                   # Dockerfile、Compose、部署与镜像回滚脚本
 ```
 
 ## 3. 启动生命周期
@@ -57,7 +63,7 @@
 
 加载失败的扩展会被单独记录，其他扩展仍可启动。全局 app command error handler 统一处理权限、冷却和未知异常，已经响应过的 interaction 会使用 follow-up 返回错误。
 
-全局时区来自 `BOT_TIMEZONE`，默认 `America/Toronto`，所有定时 Cog 使用 `config.TZ`，不再各自创建时区对象。
+全局时区来自 `BOT_TIMEZONE`，默认 `America/Toronto`，所有定时 Cog 使用 `config.TZ`，不再各自创建时区对象。`BOT_ENABLE_SCHEDULED_JOBS=false` 时，定时 Cog 仍会加载管理员手动命令，但不会启动任何自动 loop；首次 VPS canary 使用这一模式防止误推送。`BOT_RELEASE` 由部署层注入 Git SHA，并出现在 ready 日志和 `/health` 中。
 
 ## 4. AI 服务层
 
@@ -255,10 +261,12 @@ B站标准 BV 链接和 `b23.tv` 短链接由 `core.bilibili_transcript` 处理�
 
 `core.storage.JsonStore` 使用进程内 `RLock` 和同目录临时文件 + `os.replace`，避免写入中断造成半个 JSON 文件。
 
-- `settings.json`：频道 ID、模型偏好等非敏感设置，可跟踪。
-- `data/news_cache.json`：新闻缓存，Git 忽略。
-- `data/secrets.json`：slash command 保存的本地密钥，Git 忽略。
-- `.env`：部署密钥，Git 忽略。
+默认未设置 `BOT_STATE_DIR` 时保持本地兼容布局；设置后必须是绝对路径，所有可变 JSON 都移到该根目录，代码 checkout 可只读更新：
+
+- `<state-root>/settings.json`：频道 ID、模型偏好等非敏感运行设置；本地默认对应仓库中的 `settings.json`。
+- `<state-root>/data/news_cache.json`：新闻缓存，Git 忽略。
+- `<state-root>/data/secrets.json`：slash command 保存的本地密钥，Git 忽略。
+- `.env`：本地开发密钥，Git 忽略；VPS 使用容器环境注入，不把 `.env` 复制进镜像。
 
 `BOT_CONTACT_EMAIL` 也存放在 `.env` 或托管平台的私密环境变量中。虽然它不是 API
 密钥，但属于运营者个人信息，仓库中的 `.env.example` 只保留空占位符。
@@ -303,11 +311,13 @@ B站标准 BV 链接和 `b23.tv` 短链接由 `core.bilibili_transcript` 处理�
 - BBC/NPR RSS 抓取；
 - Google News/Wikipedia 联网问答抓取。
 
-`scripts/validate.py` 依次执行 compileall、可用的本地回归测试和严格健康检查。
-本地若存在被 Git 忽略的 `scratch/`，脚本会自动运行其中的核心回归模块；全新 clone
-和 CI 不依赖该目录。`--live` 可用于 cron、systemd timer 或 CI。
+`scripts/validate.py` 依次执行 compileall、仓库内 `tests/` 的离线行为回归和健康检查；`--live` 可用于人工在线验证。`scratch/` 仅用于本地实验，不参与 clean clone 的验收。
 
-`.github/workflows/validate.yml` 在 push/pull request 上使用 Python 3.13 运行验证；CI 不持有部署密钥，因此使用 `--allow-missing-secrets`，密钥与在线 provider 检查留给部署环境的 live healthcheck。
+`.github/workflows/validate.yml` 在 push/pull request 上使用 Python 3.13，并通过 `requirements.lock` 的固定版本与 hash 安装依赖。CI 不持有部署密钥，因此使用 `--allow-missing-secrets`，密钥与在线 provider 检查留给部署环境的 live healthcheck。直接依赖仍声明在 `requirements.txt`，更新后必须用 uv 重建 lock 并重新验证。
+
+VPS 运行形态是单个、无入站端口的 Docker Compose 服务。镜像固定 Python 3.13 patch 版本和基础镜像 digest，以非 root 用户、只读根文件系统、drop-all capabilities、资源上限和轮转日志运行；持久状态只挂载到 `/var/lib/discord-bot`。Bot 不加入 Caddy 的 `infra-edge` 网络。Docker `unless-stopped` 负责进程崩溃与宿主机重启恢复，容器 healthcheck 运行严格离线检查。
+
+`ops/vps/deploy.sh` 只接受 clean `main` checkout，以 Git SHA 构建镜像并串行切换；候选必须通过容器健康和 Discord Gateway ready 日志，否则恢复上一镜像。`rollback.sh` 只切换到 VPS 上仍存在的旧 SHA 镜像，不改写持久状态。部署仍是单实例短暂停机切换，不采用多副本滚动发布。
 
 Agent Toolkit 基线以根 `AGENTS.md` 为唯一项目契约，`.agents/AGENTS.md` 和
 `.agents/rules/project-guidance.md` 只负责路由，不复制另一套规则。Toolkit 只拥有
@@ -321,10 +331,7 @@ Personal Ops 使用项目 ID `discord-bot` 和规范路径 `/root/Projects/disco
 
 ## 11. 本地测试策略
 
-`scratch/` 是被 Git 忽略的本地工作目录，不属于机器人仓库或 CI 输入。开发环境可在其中
-保留回归测试、人工集成脚本和临时诊断；`scripts/validate.py` 会自动运行存在的
-`test_core_services.py`、`test_extensions.py` 和 `test_regressions.py`，目录不存在时
-则只执行仓库内的编译与健康检查。
+`tests/` 保存 provider fallback、delivery、存储、网络边界、扩展加载、部署配置和 B站字幕等离线行为测试，`scripts/validate.py` 与 CI 始终执行。测试使用临时 `JsonStore` 和 mock，不写真实 state、不调用付费模型。`scratch/` 仍是被 Git 忽略的本地工作目录，只保留人工集成脚本和临时诊断，不能成为验收前提。
 
 ## 12. 当前限制
 
@@ -332,5 +339,4 @@ Personal Ops 使用项目 ID `discord-bot` 和规范路径 `/root/Projects/disco
 - JSON Store 适合个人/小社区机器人，不适合多进程高并发写入。
 - 网页目标会在请求前验证 DNS 和每个 redirect；它降低常见 SSRF 风险，但不替代独立网络沙箱。
 - 免费模型和 RSS 源会变化，应定期运行 live healthcheck。
-- 行为回归测试当前位于被忽略的 `scratch/`；干净 clone 和 CI 只执行编译及离线配置健康
-  检查，因此 CI 尚不能证明 provider fallback、delivery 和 B站字幕等行为回归。
+- Compose 健康检查能证明配置和进程容器状态，但不能独立证明 Discord Gateway 长期在线；部署额外检查 ready 日志，长期可用性仍需 `/health` 或外部告警观察。

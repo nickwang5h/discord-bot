@@ -4,7 +4,7 @@ from discord.ext import commands, tasks
 import discord
 import asyncio
 import aiohttp
-from config import TZ
+from config import SCHEDULED_JOBS_ENABLED, TZ
 from core import settings, ai_client
 from core.jobs import run_delivery_job
 from core.utils import create_ai_embed
@@ -15,7 +15,10 @@ class AIDaily(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._delivery_lock = asyncio.Lock()
-        self.ai_news_daily.start()
+        if SCHEDULED_JOBS_ENABLED:
+            self.ai_news_daily.start()
+        else:
+            logger.info("AI 资讯日报定时任务已通过部署配置禁用")
 
     def cog_unload(self):
         self.ai_news_daily.cancel()

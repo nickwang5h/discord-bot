@@ -36,14 +36,16 @@
 
 ## 安装
 
-要求 Python 3.10+。
+要求 Python 3.10+；本仓库开发、CI 和 VPS 镜像统一使用 Python 3.13。
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 cp .env.example .env
 ```
+
+`requirements.txt` 保存直接依赖范围，`requirements.lock` 保存可复现的完整依赖图。修改直接依赖后使用 `uv pip compile requirements.txt --python-version 3.13 --universal --generate-hashes -o requirements.lock` 重新生成 lock，并运行完整验证。
 
 至少配置 Discord token 和一个 AI provider：
 
@@ -69,6 +71,7 @@ BILIBILI_COOKIE=...
 
 BOT_TIMEZONE=America/Toronto
 LOG_LEVEL=INFO
+BOT_ENABLE_SCHEDULED_JOBS=true
 ```
 
 启动：
@@ -79,9 +82,11 @@ python bot.py
 
 ## 配置与密钥
 
-- `settings.json`：频道 ID、模型偏好等非敏感设置，可提交到 Git。
-- `.env`：部署环境密钥，已被 Git 忽略。
+- `settings.json`：本地默认的频道 ID、模型偏好等非敏感设置，可提交到 Git。
+- `.env`：本地开发密钥，已被 Git 忽略；VPS 通过 Compose `env_file` 注入，不复制进镜像。
 - `data/secrets.json`：通过 `/set_gemini_key` 保存的本地密钥，已被 Git 忽略。
+- `BOT_STATE_DIR`：可选的绝对路径；设置后，`settings.json`、`data/secrets.json` 和 `data/news_cache.json` 全部从该目录读写，使部署代码和持久状态分离。
+- `BOT_ENABLE_SCHEDULED_JOBS`：是否启动日报、阅读和高级资讯循环；关闭后管理员手动测试命令仍可使用。
 - `BOT_CONTACT_EMAIL`：Wikimedia 要求的机器人联系方式，只随 Wikipedia API 请求发送；日志和健康检查不会显示其值。
 - `BILIBILI_COOKIE`：可选的 B站登录态，建议使用专用低权限账号；只发送给固定 Bilibili API，绝不提交或写入日志。
 - `/set_news_channel`、`/set_test_news_channel`、`/set_reading_channel`：设置推送频道。
@@ -116,8 +121,7 @@ python scripts/validate.py
 python scripts/validate.py --live
 ```
 
-本地若存在被 Git 忽略的 `scratch/` 测试，验证脚本会自动运行其中的核心回归模块；
-仓库和 CI 不依赖该本地目录。
+仓库内 `tests/` 的行为回归测试始终由验证脚本和 CI 执行；`scratch/` 只保留本地实验，不属于 CI 输入。
 
 在线检查只读取 Discord 身份、模型目录和测试 RSS，不执行模型生成，因此不会消耗 LLM token。脚本会用退出码表示成功或失败，适合 cron、systemd timer 或 CI：
 
@@ -125,7 +129,27 @@ python scripts/validate.py --live
 15 6 * * * cd /path/to/discord-bot && /path/to/python scripts/healthcheck.py --strict --live >> healthcheck.log 2>&1
 ```
 
-仓库还包含 `.github/workflows/validate.yml`，push 和 pull request 时会在无部署密钥的环境中运行同一套编译与测试。使用的是官方当前主版本 `actions/checkout@v6` 和 `actions/setup-python@v6`。
+仓库还包含 `.github/workflows/validate.yml`，push 和 pull request 时会在无部署密钥的环境中按 lock 安装依赖，并运行同一套编译与测试。使用的是官方当前主版本 `actions/checkout@v6` 和 `actions/setup-python@v6`。
+
+## VPS Docker 部署
+
+`ops/vps/` 提供固定 Python 3.13 基础镜像、无入站端口的 Compose 服务、日志轮转、资源/权限限制、健康检查和按 Git SHA 标记的回滚入口。部署状态位于 `/srv/discord-bot/runtime/state`，密钥环境文件位于 `/srv/discord-bot/runtime/runtime.env`（权限必须禁止 group/other 访问）。Bot 不连接 Caddy 或公共 `infra-edge` 网络。
+
+首次 canary 应在 VPS 的 `runtime.env` 设置：
+
+```env
+BOT_ENABLE_SCHEDULED_JOBS=false
+```
+
+确认 Gateway、`/ping` 和手动功能后再改为 `true`。部署前必须先停止使用同一 Token 的本地实例，项目只支持单进程 at-most-once 语义。
+
+VPS checkout 和私密环境准备完成后，可从本地通过 Tailscale SSH 执行：
+
+```bash
+DISCORD_BOT_SSH_TARGET=user@tailscale-host ./scripts/deploy_vps.sh
+```
+
+部署脚本拒绝 dirty checkout 和并行部署，执行 fast-forward 更新、缓存构建、容器健康检查与 Gateway ready 检查；失败时恢复上一镜像。显式回滚使用 VPS 上的 `ops/vps/rollback.sh <git-tag>`，不会改写持久状态。真实密钥的创建、迁移和备份必须由 owner 在 VPS 私密路径中完成。
 
 ## 主要命令
 

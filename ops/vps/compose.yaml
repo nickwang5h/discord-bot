@@ -1,0 +1,40 @@
+name: discord-bot
+
+services:
+  bot:
+    image: discord-bot:${DISCORD_BOT_IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: ops/vps/Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    env_file:
+      - ${DISCORD_BOT_RUNTIME_DIR:-/srv/discord-bot/runtime}/runtime.env
+    environment:
+      BOT_RELEASE: ${DISCORD_BOT_IMAGE_TAG:-dev}
+      BOT_STATE_DIR: /var/lib/discord-bot
+    volumes:
+      - ${DISCORD_BOT_RUNTIME_DIR:-/srv/discord-bot/runtime}/state:/var/lib/discord-bot
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py", "--strict"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
