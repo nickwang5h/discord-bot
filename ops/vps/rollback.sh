@@ -39,7 +39,7 @@ for _attempt in {1..12}; do
         chmod 600 "$deploy_env"
         trap - EXIT
         echo "Discord Bot rolled back to release $release."
-        "${compose[@]}" ps
+        docker compose --env-file "$deploy_env" -f "$compose_file" ps
         exit 0
     fi
     sleep 5

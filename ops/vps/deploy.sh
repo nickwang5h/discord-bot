@@ -92,4 +92,4 @@ chmod 600 "$deploy_env"
 trap - EXIT
 
 echo "Discord Bot release $release is running and Gateway-ready."
-"${compose_candidate[@]}" ps
+docker compose --env-file "$deploy_env" -f "$compose_file" ps
