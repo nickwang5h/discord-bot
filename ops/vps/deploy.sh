@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
 runtime_dir=${DISCORD_BOT_RUNTIME_DIR:-/srv/discord-bot/runtime}
-info_repo=${INFO_CURATOR_REPO:-/srv/info-curator/repo}
-media_repo=${MEDIA_TRANSCRIBER_REPO:-/srv/media-transcriber/repo}
+info_repo=${INFO_CURATOR_REPO:-/srv/info-curator/source}
+media_repo=${MEDIA_TRANSCRIBER_REPO:-/srv/media-transcriber/source}
 info_runtime=${INFO_CURATOR_RUNTIME_DIR:-/srv/info-curator/runtime}
 media_runtime=${MEDIA_TRANSCRIBER_RUNTIME_DIR:-/srv/media-transcriber/runtime}
 video_state=${VIDEO_SUMMARY_STATE_DIR:-/srv/info-curator/runtime/state}

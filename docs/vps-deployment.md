@@ -27,8 +27,8 @@ VPS 需要三个独立、同属 uid/gid 1000 的 clean checkout：
 
 ```text
 /srv/discord-bot/repo
-/srv/info-curator/repo
-/srv/media-transcriber/repo
+/srv/info-curator/source       # 不覆盖既有 /srv/info-curator/repo release symlink
+/srv/media-transcriber/source
 ```
 
 Info Curator 与 Media Transcriber 不会被复制进 Discord 仓库；Docker BuildKit 仅把各自
@@ -166,13 +166,13 @@ attempt marker 会保留，避免 Discord 重复消耗模型请求。
     ├── deploy.env           # 当前三仓库 manifest 与镜像标签
     └── state/               # Discord JSON state
 /srv/info-curator/
-├── repo/                    # clean main checkout
+├── source/                  # clean main checkout；repo/ 可保留既有 release symlink
 └── runtime/
     ├── runtime.env          # 视频总结 provider key，mode 600
     ├── settings-openrouter.toml
     └── state/video-summaries/ # 私有字幕、quarantine、总结 artifacts
 /srv/media-transcriber/
-├── repo/                    # clean main checkout
+├── source/                  # clean main checkout
 └── runtime/runtime.env      # Bilibili Cookie，mode 600
 ```
 

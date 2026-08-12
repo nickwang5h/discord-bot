@@ -7,8 +7,8 @@ services:
       context: ../..
       dockerfile: ops/vps/VideoSummary.Dockerfile
       additional_contexts:
-        info_curator: ${INFO_CURATOR_BUILD_CONTEXT:-/srv/info-curator/repo}
-        media_transcriber: ${MEDIA_TRANSCRIBER_BUILD_CONTEXT:-/srv/media-transcriber/repo}
+        info_curator: ${INFO_CURATOR_BUILD_CONTEXT:-/srv/info-curator/source}
+        media_transcriber: ${MEDIA_TRANSCRIBER_BUILD_CONTEXT:-/srv/media-transcriber/source}
     restart: unless-stopped
     init: true
     stop_grace_period: 30s

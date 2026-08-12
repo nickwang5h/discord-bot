@@ -66,8 +66,8 @@ fi
 
 remote_repo=${DISCORD_BOT_REMOTE_REPO:-/srv/discord-bot/repo}
 runtime_dir=${DISCORD_BOT_RUNTIME_DIR:-/srv/discord-bot/runtime}
-info_repo=${INFO_CURATOR_REPO:-/srv/info-curator/repo}
-media_repo=${MEDIA_TRANSCRIBER_REPO:-/srv/media-transcriber/repo}
+info_repo=${INFO_CURATOR_REPO:-/srv/info-curator/source}
+media_repo=${MEDIA_TRANSCRIBER_REPO:-/srv/media-transcriber/source}
 info_runtime=${INFO_CURATOR_RUNTIME_DIR:-/srv/info-curator/runtime}
 media_runtime=${MEDIA_TRANSCRIBER_RUNTIME_DIR:-/srv/media-transcriber/runtime}
 if [[ "$remote_repo" != /* || "$runtime_dir" != /* || "$info_repo" != /* || "$media_repo" != /* || "$info_runtime" != /* || "$media_runtime" != /* ]]; then

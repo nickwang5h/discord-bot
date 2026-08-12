@@ -83,6 +83,8 @@ class DeploymentScriptTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+        self.assertIn('info_repo=${INFO_CURATOR_REPO:-/srv/info-curator/source}', text)
+        self.assertIn('media_repo=${MEDIA_TRANSCRIBER_REPO:-/srv/media-transcriber/source}', text)
         self.assertIn('update_repo "Discord Bot"', text)
         self.assertIn('update_repo "Info Curator"', text)
         self.assertIn('update_repo "Media Transcriber"', text)
