@@ -22,6 +22,7 @@ from cogs.ask import (
 from cogs.link_summary import fetch_and_summarize
 from core.discord_video_presenter import (
     EMBED_DESCRIPTION_LIMIT,
+    compact_curated_markdown,
     create_curated_video_embeds,
     split_curated_markdown,
 )
@@ -441,20 +442,63 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
         embeds = create_curated_video_embeds(
             markdown, provider="groq", model="qwen/qwen3.6-27b"
         )
-        self.assertGreater(len(chunks),1)
-        self.assertEqual("".join(chunks),markdown)
-        self.assertEqual("".join(embed.description or "" for embed in embeds),markdown)
-        self.assertTrue(all(len(embed.description or "")<=EMBED_DESCRIPTION_LIMIT for embed in embeds))
-        self.assertEqual(embeds[0].title,f"🔗 B站视频内容总结 (1/{len(embeds)})")
-        self.assertEqual(embeds[-1].footer.text,"✨ Powered by groq (qwen/qwen3.6-27b)")
-        self.assertNotIn("已被自动截断","".join(embed.description or "" for embed in embeds))
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual("".join(chunks), markdown)
+        self.assertEqual("".join(embed.description or "" for embed in embeds), markdown)
+        self.assertTrue(
+            all(
+                len(embed.description or "") <= EMBED_DESCRIPTION_LIMIT
+                for embed in embeds
+            )
+        )
+        self.assertEqual(
+            embeds[0].title, f"🔗 B站视频内容总结 (1/{len(embeds)})"
+        )
+        self.assertEqual(
+            embeds[-1].footer.text, "✨ Powered by groq (qwen/qwen3.6-27b)"
+        )
+        self.assertNotIn(
+            "已被自动截断", "".join(embed.description or "" for embed in embeds)
+        )
+
+    def test_curated_video_presenter_removes_only_owner_citation_audit_rows(self):
+        first = (
+            "[00:01:19–00:01:20]"
+            "(https://www.bilibili.com/video/BV1dnuq6dEak?t=79) `seg-000045`"
+        )
+        second = (
+            "[00:01:34–00:01:35]"
+            "(https://www.bilibili.com/video/BV1dnuq6dEak?t=94) `seg-000053`"
+        )
+        markdown = (
+            "# 视频总结\n\n"
+            "正文中的引用：这个词应保留。\n\n"
+            f"引用：{first}；{second}\n\n"
+            "## 关键要点\n\n"
+            "- 一条要点\n"
+            f"  - 引用：{second}\n"
+            "- 普通链接：[参考](https://example.test)\n"
+        )
+
+        compacted = compact_curated_markdown(markdown)
+
+        self.assertEqual(
+            compacted,
+            "# 视频总结\n\n"
+            "正文中的引用：这个词应保留。\n\n"
+            "## 关键要点\n\n"
+            "- 一条要点\n"
+            "- 普通链接：[参考](https://example.test)\n",
+        )
+        self.assertNotIn("seg-000045", compacted)
+        self.assertNotIn("seg-000053", compacted)
 
     def test_curated_video_presenter_keeps_short_summary_single(self):
-        embeds=create_curated_video_embeds(
-            "# 视频总结\n\n短内容",provider="groq",model="fixture"
+        embeds = create_curated_video_embeds(
+            "# 视频总结\n\n短内容", provider="groq", model="fixture"
         )
-        self.assertEqual(len(embeds),1)
-        self.assertEqual(embeds[0].title,"🔗 B站视频内容总结")
+        self.assertEqual(len(embeds), 1)
+        self.assertEqual(embeds[0].title, "🔗 B站视频内容总结")
 
     async def test_subtitle_redirect_host_fails_closed(self):
         fetch = AsyncMock(
