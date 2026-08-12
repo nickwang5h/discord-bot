@@ -22,6 +22,7 @@ from cogs.ask import (
 from cogs.link_summary import fetch_and_summarize
 from core import ai_client
 from core.ai_providers import AIResult
+from core.info_curator_client import CuratedVideoSummary
 from core.bilibili_transcript import (
     BilibiliTranscript,
     BilibiliTranscriptError,
@@ -460,26 +461,25 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
                 fetch_json=fetch,
             )
 
-    async def test_link_summary_routes_bilibili_to_transcript_adapter(self):
-        transcript = BilibiliTranscript(
-            video_id="BV1234567890",
-            title="测试视频",
-            language="ai-zh",
-            source="自动字幕",
-            text="这是一段足够长的测试字幕。" * 10,
-            segment_count=10,
+    async def test_link_summary_routes_bilibili_to_info_curator_without_second_model(self):
+        curated = CuratedVideoSummary(
+            markdown="# 视频总结\n\n- 带时间引用的摘要",
+            provider="openrouter",
+            model="fixture-model",
+            reused=False,
+            media_reused=False,
         )
-        summarize = AsyncMock(return_value="- 摘要")
+        worker = AsyncMock(return_value=curated)
+        summarize = AsyncMock(side_effect=AssertionError("Bot AI must not summarize twice"))
 
         with (
             patch.dict(
                 fetch_and_summarize.__globals__,
                 {
-                    "fetch_bilibili_transcript": AsyncMock(return_value=transcript),
+                    "fetch_curated_video_summary": worker,
                     "fetch_public_html": AsyncMock(side_effect=AssertionError("not HTML")),
                 },
             ),
-            patch.object(fetch_and_summarize.__globals__["settings"], "get_secret", return_value=None),
             patch.object(fetch_and_summarize.__globals__["ai_client"], "ask_ai", summarize),
         ):
             success, embed = await fetch_and_summarize(
@@ -488,7 +488,10 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(success)
         self.assertIn("B站视频", embed.title)
-        self.assertIn("不可信", summarize.await_args.kwargs["system"])
+        self.assertIn("带时间引用", embed.description)
+        self.assertEqual(embed.footer.text, "✨ Powered by openrouter (fixture-model)")
+        worker.assert_awaited_once_with("https://www.bilibili.com/video/BV1234567890")
+        summarize.assert_not_awaited()
 
 
 class AdvancedNewsAnalysisTests(unittest.IsolatedAsyncioTestCase):

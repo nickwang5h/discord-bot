@@ -53,14 +53,49 @@ class DeploymentScriptTests(unittest.TestCase):
 
         self.assertIn('vps.sh" deploy', text)
 
-    def test_compose_has_no_published_ports_and_keeps_single_service(self):
+    def test_compose_isolates_bot_and_video_sidecar_without_published_ports(self):
         text = (PROJECT_ROOT / "ops" / "vps" / "compose.yaml").read_text(
             encoding="utf-8"
         )
 
         self.assertNotIn("\n    ports:", text)
-        self.assertIn("restart: unless-stopped", text)
-        self.assertIn("read_only: true", text)
+        self.assertNotIn("/var/run/docker.sock", text)
+        self.assertIn("  video-summary:", text)
+        self.assertIn("  bot:", text)
+        self.assertIn("condition: service_healthy", text)
+        self.assertIn("/run/info-curator:ro", text)
+        self.assertIn("/run/media-transcriber:ro", text)
+        self.assertGreaterEqual(text.count("read_only: true"), 2)
+
+    def test_video_sidecar_uses_pinned_python_and_source_only_named_contexts(self):
+        text = (PROJECT_ROOT / "ops" / "vps" / "VideoSummary.Dockerfile").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertRegex(text, r"FROM python:3\.12\.\d+-slim-bookworm@sha256:[a-f0-9]{64}")
+        self.assertIn("COPY --from=info_curator /src", text)
+        self.assertIn("COPY --from=media_transcriber /src", text)
+        self.assertNotIn("COPY --from=info_curator / /", text)
+        self.assertIn("USER 1000:1000", text)
+
+    def test_deploy_builds_one_manifest_from_three_clean_checkouts(self):
+        text = (PROJECT_ROOT / "ops" / "vps" / "deploy.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('update_repo "Discord Bot"', text)
+        self.assertIn('update_repo "Info Curator"', text)
+        self.assertIn('update_repo "Media Transcriber"', text)
+        self.assertIn('printf \'%s\\n%s\\n%s\\n\'', text)
+        rollback = (PROJECT_ROOT / "ops" / "vps" / "rollback.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('docker image inspect "discord-video-summary:$release"', rollback)
+        self.assertIn("--no-deps --no-build bot", rollback)
+        self.assertIn(
+            "--no-deps --no-build bot",
+            (PROJECT_ROOT / "ops" / "vps" / "deploy.sh").read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":

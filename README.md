@@ -8,7 +8,7 @@
 - 低成本新闻：RSS/Hacker News 负责事实输入，模型只负责筛选和整理。
 - 稳定日报：抓取与生成可以重试，Discord 发送至多一次；并发触发会自动跳过。
 - 格式兜底：模型生成的 Markdown 表格会自动转换为 Discord 可读的项目符号。
-- 安全链接总结：限制网页大小、请求时间和重定向次数，并拒绝本机/私网地址。
+- 安全链接总结：限制网页大小、请求时间和重定向次数；B站完整 BV 链接由隔离的 Info Curator sidecar 生成带时间引用的总结。
 - 免费健康检查：`/health` 和脚本检查不调用模型生成，不消耗 LLM token。
 
 ## 项目结构
@@ -24,6 +24,8 @@
 │   ├── storage.py            # 原子 JSON 存储
 │   ├── settings.py           # 普通设置与本地密钥分离
 │   ├── news_cache.py         # 高级新闻去重与缓存
+│   ├── info_curator_client.py # 内部视频总结 sidecar 严格客户端
+│   ├── video_summary_worker.py # 进程隔离的 Info Curator CLI 网关
 │   ├── web_fetcher.py        # 安全、限量的指定网页抓取
 │   └── web_search.py         # Google News/Wikipedia 检索与来源格式化
 ├── cogs/                     # Discord 命令与定时业务
@@ -42,7 +44,8 @@
 python -m venv .venv
 source .venv/bin/activate
 pip install --require-hashes -r requirements.lock
-cp .env.example .env
+install -d -m 700 /root/.config/discord-bot
+install -m 600 .env.example /root/.config/discord-bot/runtime.env
 ```
 
 `requirements.txt` 保存直接依赖范围，`requirements.lock` 保存可复现的完整依赖图。修改直接依赖后使用 `uv pip compile requirements.txt --python-version 3.13 --universal --generate-hashes -o requirements.lock` 重新生成 lock，并运行完整验证。
@@ -66,8 +69,9 @@ OPENROUTER_API_KEY=...
 # Wikipedia API 身份标识；只在部署环境填写，不要提交真实邮箱
 BOT_CONTACT_EMAIL=your-email@example.com
 
-# 可选；部分 B站字幕需要登录态，建议只使用专用低权限账号
-BILIBILI_COOKIE=...
+# 本地 sidecar 地址；VPS 由 Compose 固定注入
+INFO_CURATOR_SERVICE_URL=http://127.0.0.1:8080/v1/video-summary
+INFO_CURATOR_REQUEST_TIMEOUT_SECONDS=210
 
 BOT_TIMEZONE=America/Toronto
 LOG_LEVEL=INFO
@@ -83,12 +87,17 @@ python bot.py
 ## 配置与密钥
 
 - `settings.json`：本地默认的频道 ID、模型偏好等非敏感设置，可提交到 Git。
-- `.env`：本地开发密钥，已被 Git 忽略；VPS 通过 Compose `env_file` 注入，不复制进镜像。
+- `/root/.config/discord-bot/runtime.env`：WSL 本地 canonical 密钥文件，目录
+  `0700`、文件 `0600`；进程环境优先，unsafe mode/symlink 会 fail closed。
+- 项目根 `.env`：仅保留为迁移 fallback；canonical 文件存在时不再读取。VPS
+  继续通过独立 `/srv/discord-bot/runtime/runtime.env` 的 Compose `env_file`
+  注入，不复制进镜像。
 - `data/secrets.json`：通过 `/set_gemini_key` 保存的本地密钥，已被 Git 忽略。
 - `BOT_STATE_DIR`：可选的绝对路径；设置后，`settings.json`、`data/secrets.json` 和 `data/news_cache.json` 全部从该目录读写，使部署代码和持久状态分离。
 - `BOT_ENABLE_SCHEDULED_JOBS`：是否启动日报、阅读和高级资讯循环；关闭后管理员手动测试命令仍可使用。
 - `BOT_CONTACT_EMAIL`：Wikimedia 要求的机器人联系方式，只随 Wikipedia API 请求发送；日志和健康检查不会显示其值。
-- `BILIBILI_COOKIE`：可选的 B站登录态，建议使用专用低权限账号；只发送给固定 Bilibili API，绝不提交或写入日志。
+- `INFO_CURATOR_SERVICE_URL`：固定内部 sidecar 地址；只允许 Compose 服务名或 loopback，禁止跳转和任意目标。
+- B站 Cookie 与视频模型凭据不再属于 Discord runtime；分别由 Media Transcriber 与 Info Curator 的 owner-only runtime 持有。
 - `/set_news_channel`、`/set_test_news_channel`、`/set_reading_channel`：设置推送频道。
 - `/set_model`：切换 Gemini 模型。
 - `/health`：管理员查看 provider、定时任务、频道和 cooldown 状态。
@@ -133,7 +142,7 @@ python scripts/validate.py --live
 
 ## VPS Docker 部署
 
-`ops/vps/` 提供固定 Python 3.13 基础镜像、无入站端口的 Compose 服务、日志轮转、资源/权限限制、健康检查和按 Git SHA 标记的回滚入口。部署状态位于 `/srv/discord-bot/runtime/state`，密钥环境文件位于 `/srv/discord-bot/runtime/runtime.env`（权限必须禁止 group/other 访问）。Bot 不连接 Caddy 或公共 `infra-edge` 网络。
+`ops/vps/` 提供 Python 3.13 Bot 与 Python 3.12 视频 sidecar 两个固定镜像。两者只通过 Compose 内网通信，不发布端口、不连接 Caddy 或公共 `infra-edge` 网络。sidecar 从独立 clean checkout 构建，并以只读方式挂载 Info Curator/Media Transcriber 的 owner-only runtime；字幕和总结 artifacts 持久化在 `/srv/info-curator/runtime/state`。三个仓库 SHA 共同生成不可变 release tag，回滚同时恢复两个镜像。
 
 首次 canary 应在 VPS 的 `runtime.env` 设置：
 
@@ -149,13 +158,13 @@ BOT_ENABLE_SCHEDULED_JOBS=false
 ./scripts/vps.sh deploy
 ```
 
-同一入口还提供 `status`、`health`、`logs`、`env`、`images` 和 `rollback`。部署脚本拒绝 dirty checkout 和并行部署，执行 fast-forward 更新、缓存构建、容器健康检查与 Gateway ready 检查；失败时恢复上一镜像，且不会改写持久状态。完整配置、常用命令、密钥编辑和故障处理见 [`docs/vps-deployment.md`](docs/vps-deployment.md)。
+同一入口还提供 `status`、`health`、Bot/sidecar 日志、三套 owner runtime 编辑、`images` 和 `rollback`。部署脚本拒绝任一仓库 dirty checkout 和并行部署，执行三仓库 fast-forward、缓存构建、双容器健康检查与 Gateway ready 检查；失败时恢复上一 manifest，且不会改写持久状态。完整配置、常用命令、密钥编辑和故障处理见 [`docs/vps-deployment.md`](docs/vps-deployment.md)。
 
 ## 主要命令
 
 - `/ask`：AI 问答，下拉选择 `Qwen 普通问答`、`Qwen 网页检索` 或 `Gemini 原生搜索`。Qwen 检索会保留原问题，并由低成本模型补充一个等价英文查询；中英文材料统一整理为中文回答。
 - `/help`：动态列出当前加载的全部 slash commands，并区分常用、开发、管理员和实验功能。
-- `/summary`：总结网页、YouTube 字幕或 B站视频字幕。
+- `/summary`：总结网页、YouTube 字幕；完整 B站 BV 链接返回 Info Curator 已验证的时间引用总结。
 - `/recipe`：按已有食材生成菜谱。
 - `/fx`：查询 CAD 对 USD/CNY 汇率。
 - `/explain`、`/vs`、`/regex`、`/debug`：开发者工具。

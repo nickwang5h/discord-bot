@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from config import PROJECT_ROOT, _parse_bool, _resolve_state_root
+from config import PROJECT_ROOT, _parse_bool, _parse_bounded_float, _resolve_state_root
 from core import news_cache, settings
 from core.ai_providers import (
     AIResult,
@@ -42,6 +42,19 @@ class ConfigurationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "绝对路径"):
             _resolve_state_root("runtime")
+
+    def test_bounded_float_environment_values_are_strict(self):
+        self.assertEqual(
+            _parse_bounded_float(None, default=30.0, minimum=1.0, maximum=60.0),
+            30.0,
+        )
+        self.assertEqual(
+            _parse_bounded_float("45", default=30.0, minimum=1.0, maximum=60.0),
+            45.0,
+        )
+        for value in ("invalid", "0", "61"):
+            with self.assertRaisesRegex(ValueError, "浮点环境变量"):
+                _parse_bounded_float(value, default=30.0, minimum=1.0, maximum=60.0)
 
     def test_boolean_environment_values_are_strict(self):
         for value in ("1", "true", "YES", "on"):

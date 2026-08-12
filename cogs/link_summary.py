@@ -7,10 +7,10 @@ from discord import app_commands
 from urllib.parse import urlparse, parse_qs
 import trafilatura
 from youtube_transcript_api import YouTubeTranscriptApi
-from core import ai_client, settings
-from core.bilibili_transcript import (
-    BilibiliTranscriptError,
-    fetch_bilibili_transcript,
+from core import ai_client
+from core.info_curator_client import (
+    InfoCuratorError,
+    fetch_curated_video_summary,
     is_bilibili_url,
 )
 from core.utils import create_ai_embed
@@ -18,6 +18,7 @@ from core.web_fetcher import UnsafeUrlError, fetch_public_html
 
 URL_RE = re.compile(r"https?://\S+")
 logger = logging.getLogger(__name__)
+_CURATED_VIDEO_SLOT = asyncio.Semaphore(1)
 
 def extract_video_id(url):
     try:
@@ -66,29 +67,22 @@ async def fetch_and_summarize(url: str) -> tuple[bool, discord.Embed | str]:
             logger.warning("获取 YouTube 字幕失败 [%s]: %s", video_id, e)
             return False, "❌ 无法获取该 YouTube 视频的字幕。可能该视频未提供可选字幕。"
     elif is_bilibili_url(url):
-        prompt_type = "B站视频"
-        embed_color = discord.Color.from_rgb(251, 114, 153)
         try:
-            transcript = await fetch_bilibili_transcript(
-                url,
-                cookie=settings.get_secret("BILIBILI_COOKIE"),
-            )
-            text = transcript.text
-            logger.info(
-                "获取B站字幕成功 [%s]: language=%s source=%s segments=%d",
-                transcript.video_id,
-                transcript.language,
-                transcript.source,
-                transcript.segment_count,
-            )
-        except BilibiliTranscriptError as error:
-            logger.warning("获取B站字幕失败 [%s]: %s", error.code, error.message)
-            if error.code == "authentication_required":
-                return False, "❌ 该 B站字幕需要登录凭据，请配置 BILIBILI_COOKIE。"
-            return False, f"❌ 无法获取该 B站视频的字幕：{error.message}"
-        except Exception as error:
-            logger.exception("B站字幕处理发生未知错误: %s", error)
-            return False, "❌ 处理 B站字幕时发生未知错误。"
+            async with _CURATED_VIDEO_SLOT:
+                summary = await fetch_curated_video_summary(url)
+        except InfoCuratorError as error:
+            logger.warning("Info Curator 视频总结失败 [%s]", error.code)
+            return False, f"❌ {error.message}"
+        except Exception:
+            logger.exception("Info Curator 视频总结发生未知错误")
+            return False, "❌ 处理 B站视频总结时发生未知错误。"
+        embed = create_ai_embed(
+            title="🔗 B站视频内容总结",
+            description=summary.markdown,
+            color=discord.Color.from_rgb(251, 114, 153),
+        )
+        embed.set_footer(text=f"✨ Powered by {summary.provider} ({summary.model})")
+        return True, embed
     else:
         # 普通网页抓取
         try:

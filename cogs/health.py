@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import BOT_RELEASE, SCHEDULED_JOBS_ENABLED
+from config import BOT_RELEASE, INFO_CURATOR_SERVICE_URL, SCHEDULED_JOBS_ENABLED
 from core import ai_client, settings
 
 
@@ -19,6 +19,7 @@ class Health(commands.Cog):
             f"- Groq: {'✅' if status['groq'] else '➖'}",
             f"- Zhipu: {'✅' if status['zhipu'] else '➖'}",
             f"- OpenRouter: {'✅' if status['openrouter'] else '➖'}",
+            f"- Video sidecar: {'✅ 已配置' if INFO_CURATOR_SERVICE_URL else '➖ 未配置'}",
         ]
         cooldown = int(status["gemini_cooldown_seconds"])
         if cooldown:

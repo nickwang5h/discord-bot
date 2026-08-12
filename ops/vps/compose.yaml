@@ -1,6 +1,48 @@
 name: discord-bot
 
 services:
+  video-summary:
+    image: discord-video-summary:${DISCORD_BOT_IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: ops/vps/VideoSummary.Dockerfile
+      additional_contexts:
+        info_curator: ${INFO_CURATOR_BUILD_CONTEXT:-/srv/info-curator/repo}
+        media_transcriber: ${MEDIA_TRANSCRIBER_BUILD_CONTEXT:-/srv/media-transcriber/repo}
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      INFO_CURATOR_ENV_FILE: /run/info-curator/runtime.env
+      INFO_CURATOR_VIDEO_PROVIDER_SETTINGS: /run/info-curator/settings-openrouter.toml
+      INFO_CURATOR_VIDEO_ROOT: /var/lib/info-curator/video-summaries
+      MEDIA_TRANSCRIBER_ENV_FILE: /run/media-transcriber/runtime.env
+    volumes:
+      - ${INFO_CURATOR_RUNTIME_DIR:-/srv/info-curator/runtime}:/run/info-curator:ro
+      - ${MEDIA_TRANSCRIBER_RUNTIME_DIR:-/srv/media-transcriber/runtime}:/run/media-transcriber:ro
+      - ${VIDEO_SUMMARY_STATE_DIR:-/srv/info-curator/runtime/state}:/var/lib/info-curator
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.75
+    healthcheck:
+      test: ["CMD", "python", "/app/video_summary_worker.py", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   bot:
     image: discord-bot:${DISCORD_BOT_IMAGE_TAG:-dev}
     build:
@@ -9,11 +51,16 @@ services:
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
+    depends_on:
+      video-summary:
+        condition: service_healthy
     env_file:
       - ${DISCORD_BOT_RUNTIME_DIR:-/srv/discord-bot/runtime}/runtime.env
     environment:
       BOT_RELEASE: ${DISCORD_BOT_IMAGE_TAG:-dev}
       BOT_STATE_DIR: /var/lib/discord-bot
+      INFO_CURATOR_SERVICE_URL: http://video-summary:8080/v1/video-summary
+      INFO_CURATOR_REQUEST_TIMEOUT_SECONDS: "210"
     volumes:
       - ${DISCORD_BOT_RUNTIME_DIR:-/srv/discord-bot/runtime}/state:/var/lib/discord-bot
     read_only: true

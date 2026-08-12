@@ -32,10 +32,13 @@
 │   ├── jobs.py                # RetryPolicy、single-flight 和单次发送事务
 │   ├── storage.py             # 带进程锁和原子替换的 JSON Store
 │   ├── settings.py            # 公共设置/本地密钥分离
+│   ├── runtime_env.py         # WSL canonical owner-only env loader
 │   ├── news_cache.py          # 高级新闻缓存、批量去重和推送状态
 │   ├── data_ingester.py       # 高级新闻数据源定义与标准化
 │   ├── web_fetcher.py         # 网页大小/超时/跳转/内网访问限制
-│   ├── bilibili_transcript.py # B站固定 API 字幕获取、短链校验与标准化
+│   ├── bilibili_transcript.py # 仅供旧镜像回滚/离线回归，不在当前 /summary 路径
+│   ├── info_curator_client.py # 内部视频总结 sidecar 的严格 HTTP 客户端
+│   ├── video_summary_worker.py # 参数数组调用 owner CLI 的 sidecar 网关
 │   ├── web_search.py          # 固定来源检索、证据限量与来源链接
 │   ├── logging_config.py      # 标准日志初始化
 │   └── utils.py               # Discord Embed 和 Markdown 表格转换
@@ -65,7 +68,7 @@
 
 加载失败的扩展会被单独记录，其他扩展仍可启动。全局 app command error handler 统一处理权限、冷却和未知异常，已经响应过的 interaction 会使用 follow-up 返回错误。
 
-全局时区来自 `BOT_TIMEZONE`，默认 `America/Toronto`，所有定时 Cog 使用 `config.TZ`，不再各自创建时区对象。`BOT_ENABLE_SCHEDULED_JOBS=false` 时，定时 Cog 仍会加载管理员手动命令，但不会启动任何自动 loop；首次 VPS canary 使用这一模式防止误推送。`BOT_RELEASE` 由部署层注入 Git SHA，并出现在 ready 日志和 `/health` 中。
+全局时区来自 `BOT_TIMEZONE`，默认 `America/Toronto`，所有定时 Cog 使用 `config.TZ`，不再各自创建时区对象。`BOT_ENABLE_SCHEDULED_JOBS=false` 时，定时 Cog 仍会加载管理员手动命令，但不会启动任何自动 loop；首次 VPS canary 使用这一模式防止误推送。`BOT_RELEASE` 由部署层注入三仓库 SHA manifest 的短 hash，并出现在 ready 日志和 `/health` 中。
 
 ## 4. AI 服务层
 
@@ -223,7 +226,7 @@ API，不接受用户提供目标主机。请求共享 12 秒总超时，但不�
 Wikipedia 使用搜索词命中的片段而非一律截取条目开头，更容易覆盖名单、日期等实际所问信息。
 解析结果再次校验 HTTPS 主机与路径，拒绝 Feed/API 中注入的第三方 URL。
 
-Wikipedia 请求从 Git 忽略的 `.env`/部署环境读取 `BOT_CONTACT_EMAIL`，生成
+Wikipedia 请求从 WSL canonical `/root/.config/discord-bot/runtime.env` 或部署环境读取 `BOT_CONTACT_EMAIL`，生成
 `JonathanDiscordBot/1.0 (mailto:...)` User-Agent，以满足 Wikimedia 客户端身份要求。
 邮箱只添加到 Wikipedia 单次请求，不发送给 Google News，也不写入日志、公开设置或
 健康检查输出。缺失、占位、非法格式或包含换行时会跳过 Wikipedia，并记录不含邮箱值
@@ -249,15 +252,22 @@ Wikipedia 请求从 Git 忽略的 `.env`/部署环境读取 `BOT_CONTACT_EMAIL`�
 
 YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视频媒体。
 
-B站标准 BV 链接和 `b23.tv` 短链接由 `core.bilibili_transcript` 处理。短链接最多进行
-3 次手动跳转，并要求最终地址属于固定 Bilibili 主机；视频信息、播放器字幕列表和字幕
-正文分别通过固定 API/字幕 CDN 获取，响应大小分别限制为 1 MB、1 MB 和 5 MB，不下载
-视频或音频。最长视频为 90 分钟，字幕请求全局串行执行且不自动重试。优先选择创作者
-中文字幕，其次选择 `ai-zh` 自动字幕，最后尝试英文字幕。可选 `BILIBILI_COOKIE` 从私密设置或环境变量
-读取，仅添加到 Bilibili API 请求，不写入日志；未配置时先尝试匿名访问。
+完整 B站 BV 链接不再由 Bot 抓字幕或再次调用自己的 provider。Bot 先把输入收窄为
+canonical `https://www.bilibili.com/video/BV...`（当前拒绝短链和 `p>1`），然后通过
+固定的 Compose 内网地址向 `core.info_curator_client` 发起一个无重试请求。客户端拒绝
+外部 service host、redirect、超大响应和未知 envelope；同一 Bot 进程只允许一个 B站
+总结在 sidecar 中执行。
 
-网页正文、YouTube 字幕和 B站字幕在送入模型时都明确标记为不可信数据，正文中的命令、
-提示词或角色设定不能覆盖摘要系统指令。所有来源仍统一截断到 20,000 字符。
+`core.video_summary_worker` 是 Python 3.12 sidecar 内的最小 HTTP 网关。它只接受一个
+有界 URL，使用参数数组执行 `info-curator summarize-video --output ...`，严格解析 owner
+CLI 成功/错误 envelope，并返回有界 Markdown 与 provider/model attribution。它不解析
+字幕、不持有 Discord token、不接受任意命令，也不把 stderr、Cookie、provider response
+或 artifact 路径返回 Bot。Info Curator 再通过 Media Transcriber CLI 获取和验证字幕；
+Cookie、模型凭据、完整字幕和模型 quarantine 分别留在各 owner runtime/state。任何远程
+模型失败都原样终止，不回退到 Bot 的 `ask_ai()`，避免对同一视频进行第二次隐式生成。
+
+普通网页正文和 YouTube 字幕仍由 Bot 标记为不可信数据并最多向自身模型提供 20,000
+字符。B站输入隔离与逐条时间引用验证由 Info Curator/Media Transcriber 契约负责。
 
 ## 8. 存储与密钥
 
@@ -268,12 +278,15 @@ B站标准 BV 链接和 `b23.tv` 短链接由 `core.bilibili_transcript` 处理�
 - `<state-root>/settings.json`：频道 ID、模型偏好等非敏感运行设置；本地默认对应仓库中的 `settings.json`。
 - `<state-root>/data/news_cache.json`：新闻缓存，Git 忽略。
 - `<state-root>/data/secrets.json`：slash command 保存的本地密钥，Git 忽略。
-- `.env`：本地开发密钥，Git 忽略；VPS 使用容器环境注入，不把 `.env` 复制进镜像。
+- `/root/.config/discord-bot/runtime.env`：WSL canonical 私密配置；目录 0700、
+  文件 0600，process-first，拒绝 symlink/unsafe mode；根 `.env` 仅在 canonical
+  文件缺失时作为迁移 fallback；VPS 继续使用容器环境注入。
 
-`BOT_CONTACT_EMAIL` 也存放在 `.env` 或托管平台的私密环境变量中。虽然它不是 API
+`BOT_CONTACT_EMAIL` 也存放在 canonical runtime env 或托管平台的私密环境变量中。虽然它不是 API
 密钥，但属于运营者个人信息，仓库中的 `.env.example` 只保留空占位符。
-`BILIBILI_COOKIE` 同样只能进入 Git 忽略的本地 secret store、`.env` 或部署环境；它不
-进入公开设置、日志或摘要结果。
+B站 Cookie 不再进入 Discord secret store/runtime；它只存在于 Media Transcriber 的
+owner-only runtime，并只在 sidecar 内的 Media Transcriber 子进程读取。Info Curator
+provider key 同样使用独立 runtime，Bot 只收到已验证、无完整字幕的 Markdown 结果。
 
 `get_secret()` 优先读取本地 secret store，再读取环境变量，最后兼容旧版本曾写入 `settings.json` 的密钥。再次保存密钥时会删除旧的公共设置项。
 
@@ -298,7 +311,7 @@ B站标准 BV 链接和 `b23.tv` 短链接由 `core.bilibili_transcript` 处理�
 `/health` 是管理员专用、零模型调用的运行时诊断，展示：
 
 - Gateway latency；
-- provider 是否配置、Gemini 模型和 cooldown；
+- provider、内部视频 sidecar 是否配置，以及 Gemini 模型和 cooldown；
 - 定时 Loop 是否运行/失败；
 - 推送频道是否配置。
 
@@ -317,11 +330,21 @@ B站标准 BV 链接和 `b23.tv` 短链接由 `core.bilibili_transcript` 处理�
 
 `.github/workflows/validate.yml` 在 push/pull request 上使用 Python 3.13，并通过 `requirements.lock` 的固定版本与 hash 安装依赖。CI 不持有部署密钥，因此使用 `--allow-missing-secrets`，密钥与在线 provider 检查留给部署环境的 live healthcheck。直接依赖仍声明在 `requirements.txt`，更新后必须用 uv 重建 lock 并重新验证。
 
-VPS 运行形态是单个、无入站端口的 Docker Compose 服务。镜像固定 Python 3.13 patch 版本和基础镜像 digest，以非 root 用户、只读根文件系统、drop-all capabilities、资源上限和轮转日志运行；持久状态只挂载到 `/var/lib/discord-bot`。Bot 不加入 Caddy 的 `infra-edge` 网络。Docker `unless-stopped` 负责进程崩溃与宿主机重启恢复，容器 healthcheck 运行严格离线检查。
+VPS 运行形态是同一 Docker Compose 项目中的两个无公开端口服务：Python 3.13 Bot 与
+Python 3.12 视频 sidecar。两者均固定 patch 版本和基础镜像 digest，以 uid/gid 1000、
+只读根文件系统、drop-all capabilities、资源上限和轮转日志运行。Bot 只挂载 Discord
+state；sidecar 只读挂载两套 owner runtime，并单独持久化 Info Curator artifacts。二者
+仅使用默认 Compose 内网，均不加入 Caddy 的 `infra-edge` 网络。sidecar 先通过内部
+healthcheck，Bot 才启动；Docker `unless-stopped` 负责进程和宿主机重启恢复。
 
 `scripts/vps.sh` 是本地日常运维入口，从环境变量、mode `600` 的用户配置文件或 SSH alias 解析 Tailscale SSH 目标，提供部署、状态、离线健康、日志、远端密钥编辑、镜像列表和回滚；目标与密钥不写入仓库。`deploy_vps.sh` 仅保留为兼容的一键部署别名。
 
-远端 `ops/vps/deploy.sh` 只接受 clean `main` checkout，以 Git SHA 构建镜像并串行切换；候选必须通过容器健康和 Discord Gateway ready 日志，否则恢复上一镜像。`rollback.sh` 只切换到 VPS 上仍存在的旧 SHA 镜像，不改写持久状态。部署仍是单实例短暂停机切换，不采用多副本滚动发布。
+远端 `ops/vps/deploy.sh` 只接受 Discord Bot、Info Curator 与 Media Transcriber 三个
+clean `main` checkout。三个完整 SHA 的 manifest hash 形成共同 release tag，分别构建
+Bot/sidecar 镜像后串行切换；候选必须通过两个容器健康检查和 Discord Gateway ready
+日志，否则恢复上一 manifest。`rollback.sh` 同时恢复仍存在的两个同 tag 镜像，并兼容
+sidecar 引入前的 Bot-only 镜像；所有回滚均不改写持久 artifacts/state。部署仍是单 Bot
+实例短暂停机切换，不采用多副本滚动发布。
 
 Agent Toolkit 基线以根 `AGENTS.md` 为唯一项目契约，`.agents/AGENTS.md` 和
 `.agents/rules/project-guidance.md` 只负责路由，不复制另一套规则。Toolkit 只拥有
@@ -343,4 +366,5 @@ Personal Ops 使用项目 ID `discord-bot` 和规范路径 `/root/Projects/disco
 - JSON Store 适合个人/小社区机器人，不适合多进程高并发写入。
 - 网页目标会在请求前验证 DNS 和每个 redirect；它降低常见 SSRF 风险，但不替代独立网络沙箱。
 - 免费模型和 RSS 源会变化，应定期运行 live healthcheck。
+- B站 sidecar 当前只接受完整 BV 第一P链接；短链、分P、无字幕视频和 ASR 均 fail closed。
 - Compose 健康检查能证明配置和进程容器状态，但不能独立证明 Discord Gateway 长期在线；部署额外检查 ready 日志，长期可用性仍需 `/health` 或外部告警观察。

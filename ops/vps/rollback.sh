@@ -2,13 +2,18 @@
 set -Eeuo pipefail
 
 if [[ $# -ne 1 || ! $1 =~ ^[0-9a-f]{7,40}$ ]]; then
-    echo "Usage: $0 <existing-image-git-tag>" >&2
+    echo "Usage: $0 <existing-image-release-tag>" >&2
     exit 2
 fi
 
 release=$1
 repo_root=$(git rev-parse --show-toplevel)
 runtime_dir=${DISCORD_BOT_RUNTIME_DIR:-/srv/discord-bot/runtime}
+info_repo=${INFO_CURATOR_REPO:-/srv/info-curator/repo}
+media_repo=${MEDIA_TRANSCRIBER_REPO:-/srv/media-transcriber/repo}
+info_runtime=${INFO_CURATOR_RUNTIME_DIR:-/srv/info-curator/runtime}
+media_runtime=${MEDIA_TRANSCRIBER_RUNTIME_DIR:-/srv/media-transcriber/runtime}
+video_state=${VIDEO_SUMMARY_STATE_DIR:-/srv/info-curator/runtime/state}
 compose_file="$repo_root/ops/vps/compose.yaml"
 deploy_env="$runtime_dir/deploy.env"
 
@@ -25,12 +30,40 @@ fi
 
 candidate_env=$(mktemp "$runtime_dir/.rollback.env.XXXXXX")
 trap 'rm -f "$candidate_env"' EXIT
-printf 'DISCORD_BOT_IMAGE_TAG=%s\nDISCORD_BOT_RUNTIME_DIR=%s\n' \
-    "$release" "$runtime_dir" >"$candidate_env"
+printf '%s\n' \
+    "DISCORD_BOT_IMAGE_TAG=$release" \
+    "DISCORD_BOT_RUNTIME_DIR=$runtime_dir" \
+    "INFO_CURATOR_BUILD_CONTEXT=$info_repo" \
+    "MEDIA_TRANSCRIBER_BUILD_CONTEXT=$media_repo" \
+    "INFO_CURATOR_RUNTIME_DIR=$info_runtime" \
+    "MEDIA_TRANSCRIBER_RUNTIME_DIR=$media_runtime" \
+    "VIDEO_SUMMARY_STATE_DIR=$video_state" \
+    >"$candidate_env"
 chmod 600 "$candidate_env"
 
+restore_previous_release() {
+    [[ -f $deploy_env ]] || return
+    local previous_tag
+    previous_tag=$(awk -F= '$1 == "DISCORD_BOT_IMAGE_TAG" {print $2}' "$deploy_env")
+    if [[ $previous_tag =~ ^[0-9a-f]{7,40}$ ]] \
+        && docker image inspect "discord-video-summary:$previous_tag" >/dev/null 2>&1; then
+        docker compose --env-file "$deploy_env" -f "$compose_file" up -d --remove-orphans --no-build
+    else
+        docker compose --env-file "$deploy_env" -f "$compose_file" up -d --no-deps --no-build bot
+        docker compose --env-file "$deploy_env" -f "$compose_file" stop video-summary >/dev/null 2>&1 || true
+    fi
+}
+
 compose=(docker compose --env-file "$candidate_env" -f "$compose_file")
-"${compose[@]}" up -d --remove-orphans --no-build --wait --wait-timeout 90
+worker_available=false
+if docker image inspect "discord-video-summary:$release" >/dev/null 2>&1; then
+    worker_available=true
+    "${compose[@]}" up -d --remove-orphans --no-build --wait --wait-timeout 120
+else
+    echo "Release $release predates the video-summary sidecar; restoring the Bot image only."
+    "${compose[@]}" up -d --no-deps --no-build bot
+    "${compose[@]}" stop video-summary >/dev/null 2>&1 || true
+fi
 
 container_id=$("${compose[@]}" ps -q bot)
 for _attempt in {1..12}; do
@@ -38,7 +71,7 @@ for _attempt in {1..12}; do
         mv "$candidate_env" "$deploy_env"
         chmod 600 "$deploy_env"
         trap - EXIT
-        echo "Discord Bot rolled back to release $release."
+        echo "Discord Bot rolled back to release $release (video-summary=$worker_available)."
         docker compose --env-file "$deploy_env" -f "$compose_file" ps
         exit 0
     fi
@@ -46,7 +79,5 @@ for _attempt in {1..12}; do
 done
 
 echo "Rollback container did not report Discord Gateway readiness." >&2
-if [[ -f "$deploy_env" ]]; then
-    docker compose --env-file "$deploy_env" -f "$compose_file" up -d --remove-orphans --no-build
-fi
+restore_previous_release
 exit 1
