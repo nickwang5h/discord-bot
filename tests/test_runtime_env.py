@@ -1,8 +1,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from core.runtime_env import RuntimeEnvError, load_runtime_env_file
+from core.runtime_env import (
+    RuntimeEnvError,
+    load_default_runtime_env,
+    load_runtime_env_file,
+)
 
 
 class RuntimeEnvironmentTests(unittest.TestCase):
@@ -17,6 +22,23 @@ class RuntimeEnvironmentTests(unittest.TestCase):
         self.assertEqual(environment["GROQ_API_KEY"],"process-key")
         self.assertEqual(environment["BOT_TIMEZONE"],"America/Toronto")
         self.assertEqual(loaded,("GROQ_API_KEY","BOT_TIMEZONE"))
+
+    def test_explicit_missing_runtime_file_does_not_fall_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            environment={"DISCORD_BOT_ENV_FILE":str(root/"missing.env")}
+            with self.assertRaises(RuntimeEnvError):
+                load_default_runtime_env(project_root=root,environ=environment)
+
+    def test_inaccessible_defaults_do_not_break_injected_container_env(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "pathlib.Path.exists", side_effect=PermissionError
+        ):
+            loaded=load_default_runtime_env(
+                project_root=Path(directory),
+                environ={"DISCORD_TOKEN":"injected"},
+            )
+        self.assertIsNone(loaded)
 
     def test_unsafe_file_and_symlink_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:

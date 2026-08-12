@@ -90,12 +90,27 @@ def load_default_runtime_env(
 ) -> Path | None:
     target = os.environ if environ is None else environ
     configured = target.get("DISCORD_BOT_ENV_FILE")
-    canonical = Path(configured).expanduser() if configured else DEFAULT_RUNTIME_ENV
-    if canonical.exists() or canonical.is_symlink():
+    if configured:
+        canonical = Path(configured).expanduser()
+        try:
+            present = canonical.exists() or canonical.is_symlink()
+        except OSError as error:
+            raise RuntimeEnvError("configured runtime env is unavailable") from error
+        if not present:
+            raise RuntimeEnvError("configured runtime env is unavailable")
         load_runtime_env_file(canonical, environ=target, strict_parent=True)
         return canonical
-    legacy = project_root / ".env"
-    if legacy.exists() or legacy.is_symlink():
-        load_runtime_env_file(legacy, environ=target, strict_parent=False)
-        return legacy
+    for candidate, strict_parent in (
+        (DEFAULT_RUNTIME_ENV, True),
+        (project_root / ".env", False),
+    ):
+        try:
+            present = candidate.exists() or candidate.is_symlink()
+        except OSError:
+            continue
+        if present:
+            load_runtime_env_file(
+                candidate, environ=target, strict_parent=strict_parent
+            )
+            return candidate
     return None

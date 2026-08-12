@@ -144,8 +144,14 @@ restore_previous_release() {
         && docker image inspect "discord-video-summary:$previous_tag" >/dev/null 2>&1; then
         docker compose --env-file "$deploy_env" -f "$compose_file" up -d --remove-orphans --no-build
     else
-        docker compose --env-file "$deploy_env" -f "$compose_file" up -d --no-deps --no-build bot
-        docker compose --env-file "$deploy_env" -f "$compose_file" stop video-summary >/dev/null 2>&1 || true
+        local legacy_env
+        legacy_env=$(mktemp "$runtime_dir/.legacy-restore.env.XXXXXX")
+        printf 'DISCORD_BOT_IMAGE_TAG=%s\nDISCORD_BOT_RUNTIME_DIR=%s\n' \
+            "$previous_tag" "$runtime_dir" >"$legacy_env"
+        chmod 600 "$legacy_env"
+        docker compose --env-file "$legacy_env" -f "$compose_file" up -d --no-deps --no-build bot
+        docker compose --env-file "$legacy_env" -f "$compose_file" stop video-summary >/dev/null 2>&1 || true
+        rm -f "$legacy_env"
     fi
 }
 
