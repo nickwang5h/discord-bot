@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import discord
 
-from core.utils import normalize_markdown_tables
-
 
 EMBED_DESCRIPTION_LIMIT = 3900
 
@@ -28,8 +26,7 @@ def _bounded_markdown_parts(text: str, *, limit: int) -> list[str]:
 
 def split_curated_markdown(markdown: str) -> list[str]:
     """Return consecutive Discord-sized slices of complete Curator Markdown."""
-    normalized = normalize_markdown_tables(markdown)
-    return _bounded_markdown_parts(normalized, limit=EMBED_DESCRIPTION_LIMIT)
+    return _bounded_markdown_parts(markdown, limit=EMBED_DESCRIPTION_LIMIT)
 
 
 def create_curated_video_embeds(
