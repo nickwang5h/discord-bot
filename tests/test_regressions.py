@@ -20,6 +20,11 @@ from cogs.ask import (
     _plan_search_queries,
 )
 from cogs.link_summary import fetch_and_summarize
+from core.discord_video_presenter import (
+    EMBED_DESCRIPTION_LIMIT,
+    create_curated_video_embeds,
+    split_curated_markdown,
+)
 from core import ai_client
 from core.ai_providers import AIResult
 from core.info_curator_client import CuratedVideoSummary
@@ -430,6 +435,27 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Cookie", fetch.await_args_list[0].kwargs["headers"])
         self.assertNotIn("Cookie", fetch.await_args_list[2].kwargs["headers"])
 
+    def test_curated_video_presenter_preserves_long_markdown_without_truncation(self):
+        markdown = "# 视频总结\n\n" + "正文与[时间引用](https://example.test?t=1)。" * 300
+        chunks = split_curated_markdown(markdown)
+        embeds = create_curated_video_embeds(
+            markdown, provider="groq", model="qwen/qwen3.6-27b"
+        )
+        self.assertGreater(len(chunks),1)
+        self.assertEqual("".join(chunks),markdown)
+        self.assertEqual("".join(embed.description or "" for embed in embeds),markdown)
+        self.assertTrue(all(len(embed.description or "")<=EMBED_DESCRIPTION_LIMIT for embed in embeds))
+        self.assertEqual(embeds[0].title,f"🔗 B站视频内容总结 (1/{len(embeds)})")
+        self.assertEqual(embeds[-1].footer.text,"✨ Powered by groq (qwen/qwen3.6-27b)")
+        self.assertNotIn("已被自动截断","".join(embed.description or "" for embed in embeds))
+
+    def test_curated_video_presenter_keeps_short_summary_single(self):
+        embeds=create_curated_video_embeds(
+            "# 视频总结\n\n短内容",provider="groq",model="fixture"
+        )
+        self.assertEqual(len(embeds),1)
+        self.assertEqual(embeds[0].title,"🔗 B站视频内容总结")
+
     async def test_subtitle_redirect_host_fails_closed(self):
         fetch = AsyncMock(
             side_effect=[
@@ -487,6 +513,7 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(success)
+        self.assertNotIsInstance(embed,list)
         self.assertIn("B站视频", embed.title)
         self.assertIn("带时间引用", embed.description)
         self.assertEqual(embed.footer.text, "✨ Powered by openrouter (fixture-model)")

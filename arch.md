@@ -265,6 +265,9 @@ CLI 成功/错误 envelope，并返回有界 Markdown 与 provider/model attribu
 或 artifact 路径返回 Bot。Info Curator 再通过 Media Transcriber CLI 获取和验证字幕；
 Cookie、模型凭据、完整字幕和模型 quarantine 分别留在各 owner runtime/state。任何远程
 模型失败都原样终止，不回退到 Bot 的 `ask_ai()`，避免对同一视频进行第二次隐式生成。
+完整 Curator Markdown 是通用 sidecar 结果；Discord 专用 presenter 才按连续字符边界拆成
+多个 description 不超过 3900 字符的 embed。切片拼接必须与规范化全文逐字符一致，禁止
+调用通用 `create_ai_embed()` 的截断路径而丢失后半部分引用。
 
 普通网页正文和 YouTube 字幕仍由 Bot 标记为不可信数据并最多向自身模型提供 20,000
 字符。B站输入隔离与逐条时间引用验证由 Info Curator/Media Transcriber 契约负责。

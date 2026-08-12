@@ -13,12 +13,14 @@ from core.info_curator_client import (
     fetch_curated_video_summary,
     is_bilibili_url,
 )
+from core.discord_video_presenter import create_curated_video_embeds
 from core.utils import create_ai_embed
 from core.web_fetcher import UnsafeUrlError, fetch_public_html
 
 URL_RE = re.compile(r"https?://\S+")
 logger = logging.getLogger(__name__)
 _CURATED_VIDEO_SLOT = asyncio.Semaphore(1)
+
 
 def extract_video_id(url):
     try:
@@ -36,7 +38,9 @@ def extract_video_id(url):
         pass
     return None
 
-async def fetch_and_summarize(url: str) -> tuple[bool, discord.Embed | str]:
+async def fetch_and_summarize(
+    url: str,
+) -> tuple[bool, discord.Embed | list[discord.Embed] | str]:
     # 尝试解析 YouTube ID
     video_id = extract_video_id(url)
     text = ""
@@ -76,13 +80,12 @@ async def fetch_and_summarize(url: str) -> tuple[bool, discord.Embed | str]:
         except Exception:
             logger.exception("Info Curator 视频总结发生未知错误")
             return False, "❌ 处理 B站视频总结时发生未知错误。"
-        embed = create_ai_embed(
-            title="🔗 B站视频内容总结",
-            description=summary.markdown,
-            color=discord.Color.from_rgb(251, 114, 153),
+        embeds = create_curated_video_embeds(
+            summary.markdown,
+            provider=summary.provider,
+            model=summary.model,
         )
-        embed.set_footer(text=f"✨ Powered by {summary.provider} ({summary.model})")
-        return True, embed
+        return True, embeds[0] if len(embeds) == 1 else embeds
     else:
         # 普通网页抓取
         try:
@@ -148,7 +151,12 @@ class LinkSummary(commands.Cog):
                 success, result = await fetch_and_summarize(url)
             
             if success:
-                await status_msg.edit(content=None, embed=result)
+                if isinstance(result, list):
+                    await status_msg.edit(content=None, embed=result[0])
+                    for embed in result[1:]:
+                        await status_msg.reply(embed=embed, mention_author=False)
+                else:
+                    await status_msg.edit(content=None, embed=result)
             else:
                 await status_msg.edit(content=result)
 
@@ -161,7 +169,15 @@ class LinkSummary(commands.Cog):
             success, result = await fetch_and_summarize(url)
         
         if success:
-            await interaction.edit_original_response(content=f"**提取来源:** {url}", embed=result)
+            if isinstance(result, list):
+                await interaction.edit_original_response(
+                    content=f"**提取来源:** {url}",
+                    embed=result[0],
+                )
+                for embed in result[1:]:
+                    await interaction.followup.send(embed=embed)
+            else:
+                await interaction.edit_original_response(content=f"**提取来源:** {url}", embed=result)
         else:
             await interaction.edit_original_response(content=result)
 
