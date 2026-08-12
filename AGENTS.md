@@ -1,5 +1,17 @@
 # Discord AI Bot Agent Instructions
 
+## Autonomous role and reporting
+
+Discord Bot owns user interaction, bounded job delivery, and result presentation. It
+does not become the media or semantic-processing worker. Work directly in this
+repository; an ordinary project-local request does not need a Personal Ops task first.
+
+Discord Bot is observation-only during the initial Personal Ops v2 pilot. Use
+`/root/Projects/personal-ops/docs/FEDERATED-OPERATIONS.md` for L0–L3 boundaries;
+submit `ops-report` for meaningful durable changes, especially risks, decisions, or
+runtime changes. L2/L3 requires prior Owner scope. Push, merge, deploy, provider/live
+checks, private runtime access, and service changes remain explicitly authorized.
+
 ## Start here
 
 - Work from `/root/Projects/discord-bot` and inspect `git status --short --branch`.
