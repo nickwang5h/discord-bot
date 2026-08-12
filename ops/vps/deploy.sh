@@ -35,6 +35,7 @@ fi
 update_repo() {
     local name=$1
     local path=$2
+    local expected_sha=${3:-}
     if ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "$name checkout is missing at $path." >&2
         exit 1
@@ -47,8 +48,20 @@ update_repo() {
         echo "$name checkout must be on main: $path." >&2
         exit 1
     fi
-    git -C "$path" fetch origin main
-    git -C "$path" merge --ff-only origin/main
+    if ! GIT_TERMINAL_PROMPT=0 git -C "$path" fetch origin main; then
+        if [[ -n $expected_sha && $(git -C "$path" rev-parse HEAD) == "$expected_sha" ]]; then
+            echo "$name remote is unavailable; using the locally verified expected commit."
+        else
+            echo "$name fetch failed and the checkout is not at the expected commit." >&2
+            exit 1
+        fi
+    else
+        git -C "$path" merge --ff-only origin/main
+    fi
+    if [[ -n $expected_sha && $(git -C "$path" rev-parse HEAD) != "$expected_sha" ]]; then
+        echo "$name checkout does not match the locally authorized commit." >&2
+        exit 1
+    fi
 }
 
 check_private_dir() {
@@ -95,9 +108,9 @@ if [[ ! -f "$runtime_dir/state/settings.json" ]]; then
 fi
 chmod 600 "$runtime_dir/state/settings.json"
 
-update_repo "Discord Bot" "$repo_root"
-update_repo "Info Curator" "$info_repo"
-update_repo "Media Transcriber" "$media_repo"
+update_repo "Discord Bot" "$repo_root" "${DISCORD_BOT_EXPECTED_SHA:-}"
+update_repo "Info Curator" "$info_repo" "${INFO_CURATOR_EXPECTED_SHA:-}"
+update_repo "Media Transcriber" "$media_repo" "${MEDIA_TRANSCRIBER_EXPECTED_SHA:-}"
 
 discord_sha=$(git -C "$repo_root" rev-parse HEAD)
 info_sha=$(git -C "$info_repo" rev-parse HEAD)

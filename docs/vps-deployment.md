@@ -32,9 +32,11 @@ VPS 需要三个独立、同属 uid/gid 1000 的 clean checkout：
 ```
 
 Info Curator 与 Media Transcriber 不会被复制进 Discord 仓库；Docker BuildKit 仅把各自
-`src/` 作为 named build context 放入 Python 3.12 sidecar。部署脚本会对三个仓库执行
+`src/` 作为 named build context 放入 Python 3.12 sidecar。部署脚本优先对三个仓库执行
 `fetch` + `merge --ff-only origin/main`，并以三个完整 SHA 的 manifest hash 作为共同镜像
-标签。任何 checkout dirty、不是 `main` 或缺失都会 fail closed。
+标签。对于 VPS 无 GitHub 凭据的私有 sibling 仓库，可通过校验过的本地 Git bundle 初始化；
+本地运维 CLI 会把三个已授权 SHA 传给远端，远端仅在 fetch 失败且 checkout 精确等于该
+SHA 时继续。任何 checkout dirty、不是 `main`、缺失或 SHA 不匹配都会 fail closed。
 
 通过以下命令分别在 VPS 内编辑配置，值不要经过聊天或 Git：
 

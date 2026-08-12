@@ -80,9 +80,21 @@ ssh_options=(-o BatchMode=yes -o ConnectTimeout=12)
 case "$command" in
     deploy)
         [[ $# -eq 0 ]] || { usage >&2; exit 2; }
+        local_root=$(git rev-parse --show-toplevel)
+        info_local=${INFO_CURATOR_LOCAL_REPO:-$local_root/../info-curator}
+        media_local=${MEDIA_TRANSCRIBER_LOCAL_REPO:-$local_root/../media-transcriber}
+        for path in "$local_root" "$info_local" "$media_local"; do
+            if [[ ! -d $path/.git || -n $(git -C "$path" status --porcelain) || $(git -C "$path" branch --show-current) != main ]]; then
+                echo "All three local source repositories must be clean main checkouts." >&2
+                exit 1
+            fi
+        done
+        discord_sha=$(git -C "$local_root" rev-parse HEAD)
+        info_sha=$(git -C "$info_local" rev-parse HEAD)
+        media_sha=$(git -C "$media_local" rev-parse HEAD)
         printf -v remote_command \
-            'cd %q && DISCORD_BOT_RUNTIME_DIR=%q INFO_CURATOR_REPO=%q MEDIA_TRANSCRIBER_REPO=%q INFO_CURATOR_RUNTIME_DIR=%q MEDIA_TRANSCRIBER_RUNTIME_DIR=%q ./ops/vps/deploy.sh' \
-            "$remote_repo" "$runtime_dir" "$info_repo" "$media_repo" "$info_runtime" "$media_runtime"
+            'cd %q && DISCORD_BOT_RUNTIME_DIR=%q INFO_CURATOR_REPO=%q MEDIA_TRANSCRIBER_REPO=%q INFO_CURATOR_RUNTIME_DIR=%q MEDIA_TRANSCRIBER_RUNTIME_DIR=%q DISCORD_BOT_EXPECTED_SHA=%q INFO_CURATOR_EXPECTED_SHA=%q MEDIA_TRANSCRIBER_EXPECTED_SHA=%q ./ops/vps/deploy.sh' \
+            "$remote_repo" "$runtime_dir" "$info_repo" "$media_repo" "$info_runtime" "$media_runtime" "$discord_sha" "$info_sha" "$media_sha"
         exec ssh "${ssh_options[@]}" "$ssh_target" "$remote_command"
         ;;
     status)

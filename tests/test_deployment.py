@@ -88,6 +88,8 @@ class DeploymentScriptTests(unittest.TestCase):
         self.assertIn('update_repo "Discord Bot"', text)
         self.assertIn('update_repo "Info Curator"', text)
         self.assertIn('update_repo "Media Transcriber"', text)
+        self.assertIn("INFO_CURATOR_EXPECTED_SHA", text)
+        self.assertIn("GIT_TERMINAL_PROMPT=0", text)
         self.assertIn('printf \'%s\\n%s\\n%s\\n\'', text)
         rollback = (PROJECT_ROOT / "ops" / "vps" / "rollback.sh").read_text(
             encoding="utf-8"
