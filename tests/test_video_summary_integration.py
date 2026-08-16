@@ -11,6 +11,7 @@ import config
 from core.info_curator_client import (
     InfoCuratorError,
     canonicalize_video_url,
+    fetch_curated_video_brief,
     fetch_curated_video_summary,
     is_bilibili_url,
 )
@@ -63,6 +64,9 @@ class InfoCuratorClientTests(unittest.IsolatedAsyncioTestCase):
             "markdown": "# 视频总结\n\n带时间引用",
             "provider": "openrouter",
             "model": "fixture-model",
+            "profile": "summary",
+            "transcript_source": "automatic_subtitle",
+            "language": "ai-zh",
             "reused": False,
             "media_reused": True,
         }
@@ -84,8 +88,51 @@ class InfoCuratorClientTests(unittest.IsolatedAsyncioTestCase):
             thread.join(timeout=2)
 
         self.assertEqual(summary.provider, "openrouter")
+        self.assertEqual(summary.profile, "summary")
         self.assertTrue(summary.media_reused)
         run.assert_called_once_with("https://www.bilibili.com/video/BV1234567890")
+
+    async def test_brief_client_forwards_only_the_explicit_brief_profile(self):
+        server = create_server("127.0.0.1", 0)
+        port = server.server_address[1]
+        thread = threading.Thread(
+            target=lambda: server.serve_forever(poll_interval=0.05), daemon=True
+        )
+        thread.start()
+        result = {
+            "schema_version": "discord_video_summary_worker_v1",
+            "status": "complete",
+            "markdown": "# 标题：fixture\n\n## 一句话总结\n\n核心结论",
+            "provider": "groq",
+            "model": "qwen/qwen3.6-27b",
+            "profile": "brief",
+            "transcript_source": "automatic_subtitle",
+            "language": "ai-zh",
+            "reused": False,
+            "media_reused": True,
+        }
+        try:
+            with (
+                patch.object(
+                    config,
+                    "INFO_CURATOR_SERVICE_URL",
+                    f"http://127.0.0.1:{port}/v1/video-summary",
+                ),
+                patch("core.video_summary_worker.run_info_curator", return_value=result) as run,
+            ):
+                summary = await fetch_curated_video_brief(
+                    "https://www.bilibili.com/video/BV1234567890?tracking=1"
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(summary.profile, "brief")
+        self.assertEqual(summary.transcript_source, "automatic_subtitle")
+        run.assert_called_once_with(
+            "https://www.bilibili.com/video/BV1234567890", profile="brief"
+        )
 
     async def test_worker_error_is_mapped_without_exposing_subprocess_text(self):
         server = create_server("127.0.0.1", 0)
@@ -137,10 +184,13 @@ output.chmod(0o600)
 print(json.dumps({
     "schema_version": "content_enrichment_cli_summary_v1",
     "status": "complete",
+    "profile": "summary",
     "reused": False,
     "media_reused": True,
     "provider": "fixture-provider",
     "model": "fixture-model",
+    "transcript_source": "automatic_subtitle",
+    "language": "ai-zh",
     "output": str(output),
 }))
 """,
@@ -156,7 +206,47 @@ print(json.dumps({
 
         self.assertEqual(result["schema_version"], "discord_video_summary_worker_v1")
         self.assertEqual(result["provider"], "fixture-provider")
+        self.assertEqual(result["profile"], "summary")
         self.assertIn("00:01", result["markdown"])
+
+    def test_worker_adds_brief_profile_to_the_cli_argv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "fake-info-curator"
+            executable.write_text(
+                '''#!/usr/bin/python3
+import json
+import pathlib
+import sys
+assert sys.argv[1:6] == ["summarize-video", sys.argv[2], "--profile", "brief", "--output"]
+output = pathlib.Path(sys.argv[6])
+output.write_text("# 标题：fixture\\n\\n## 一句话总结\\n\\n核心结论\\n", encoding="utf-8")
+output.chmod(0o600)
+print(json.dumps({
+    "schema_version": "content_enrichment_cli_summary_v1",
+    "status": "complete",
+    "profile": "brief",
+    "reused": False,
+    "media_reused": True,
+    "provider": "groq",
+    "model": "qwen/qwen3.6-27b",
+    "transcript_source": "automatic_subtitle",
+    "language": "ai-zh",
+    "output": str(output),
+}))
+''',
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
+            result = run_info_curator(
+                "https://www.bilibili.com/video/BV1234567890",
+                executable=str(executable),
+                timeout_seconds=30,
+                profile="brief",
+            )
+
+        self.assertEqual(result["profile"], "brief")
+        self.assertEqual(result["transcript_source"], "automatic_subtitle")
 
     def test_worker_propagates_only_allowlisted_cli_error_code(self):
         with tempfile.TemporaryDirectory() as directory:

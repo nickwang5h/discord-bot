@@ -19,7 +19,7 @@ from cogs.ask import (
     _answer_question,
     _plan_search_queries,
 )
-from cogs.link_summary import fetch_and_summarize
+from cogs.link_summary import fetch_and_summarize, fetch_brief
 from core.discord_video_presenter import (
     EMBED_DESCRIPTION_LIMIT,
     compact_curated_markdown,
@@ -500,6 +500,17 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(embeds), 1)
         self.assertEqual(embeds[0].title, "🔗 B站视频内容总结")
 
+    def test_curated_video_presenter_accepts_compact_brief_footer(self):
+        footer = "✨ qwen/qwen3.6-27b · automatic_subtitle / ai-zh"
+        embeds = create_curated_video_embeds(
+            "# 标题：fixture\n\n## 一句话总结\n\n核心结论",
+            provider="groq",
+            model="qwen/qwen3.6-27b",
+            footer_text=footer,
+        )
+        self.assertEqual(embeds[0].footer.text, footer)
+        self.assertNotIn("Powered by", embeds[0].footer.text)
+
     async def test_subtitle_redirect_host_fails_closed(self):
         fetch = AsyncMock(
             side_effect=[
@@ -536,6 +547,9 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
             markdown="# 视频总结\n\n- 带时间引用的摘要",
             provider="openrouter",
             model="fixture-model",
+            profile="summary",
+            transcript_source="automatic_subtitle",
+            language="ai-zh",
             reused=False,
             media_reused=False,
         )
@@ -563,6 +577,35 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(embed.footer.text, "✨ Powered by openrouter (fixture-model)")
         worker.assert_awaited_once_with("https://www.bilibili.com/video/BV1234567890")
         summarize.assert_not_awaited()
+
+    async def test_brief_route_uses_distinct_worker_and_compact_footer(self):
+        curated = CuratedVideoSummary(
+            markdown="# 标题：fixture\n\n## 一句话总结\n\n核心结论",
+            provider="groq",
+            model="qwen/qwen3.6-27b",
+            profile="brief",
+            transcript_source="automatic_subtitle",
+            language="ai-zh",
+            reused=False,
+            media_reused=False,
+        )
+        worker = AsyncMock(return_value=curated)
+        with patch.dict(
+            fetch_brief.__globals__, {"fetch_curated_video_brief": worker}
+        ):
+            success, embed = await fetch_brief(
+                "https://www.bilibili.com/video/BV1234567890"
+            )
+
+        self.assertTrue(success)
+        self.assertNotIsInstance(embed, list)
+        self.assertIn("精简摘要", embed.title)
+        self.assertEqual(
+            embed.footer.text,
+            "✨ qwen/qwen3.6-27b · automatic_subtitle / ai-zh",
+        )
+        self.assertNotIn("Powered by", embed.footer.text)
+        worker.assert_awaited_once_with("https://www.bilibili.com/video/BV1234567890")
 
 
 class AdvancedNewsAnalysisTests(unittest.IsolatedAsyncioTestCase):

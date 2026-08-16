@@ -33,6 +33,9 @@ class CuratedVideoSummary:
     markdown: str
     provider: str
     model: str
+    profile: str
+    transcript_source: str
+    language: str
     reused: bool
     media_reused: bool
 
@@ -130,6 +133,9 @@ def _validated_result(value: object) -> CuratedVideoSummary:
         "markdown",
         "provider",
         "model",
+        "profile",
+        "transcript_source",
+        "language",
         "reused",
         "media_reused",
     }:
@@ -137,6 +143,9 @@ def _validated_result(value: object) -> CuratedVideoSummary:
     markdown = value.get("markdown")
     provider = value.get("provider")
     model = value.get("model")
+    profile = value.get("profile")
+    transcript_source = value.get("transcript_source")
+    language = value.get("language")
     if (
         value.get("schema_version") != "discord_video_summary_worker_v1"
         or value.get("status") != "complete"
@@ -149,6 +158,14 @@ def _validated_result(value: object) -> CuratedVideoSummary:
         or not isinstance(model, str)
         or not 1 <= len(model) <= 160
         or any(ord(character) < 32 for character in model)
+        or not isinstance(profile, str)
+        or profile not in {"summary", "brief"}
+        or not isinstance(transcript_source, str)
+        or transcript_source
+        not in {"creator_subtitle", "automatic_subtitle", "local_asr"}
+        or not isinstance(language, str)
+        or not 1 <= len(language) <= 35
+        or any(ord(character) < 32 for character in language)
         or not isinstance(value.get("reused"), bool)
         or not isinstance(value.get("media_reused"), bool)
     ):
@@ -157,6 +174,9 @@ def _validated_result(value: object) -> CuratedVideoSummary:
         markdown=markdown,
         provider=provider,
         model=model,
+        profile=profile,
+        transcript_source=transcript_source,
+        language=language,
         reused=value["reused"],
         media_reused=value["media_reused"],
     )
@@ -190,15 +210,22 @@ def _worker_error(value: object) -> InfoCuratorError:
     return InfoCuratorError(code, messages.get(code, "视频总结服务暂时不可用。"))
 
 
-async def fetch_curated_video_summary(url: str) -> CuratedVideoSummary:
+async def _fetch_curated_video(
+    url: str, *, profile: str
+) -> CuratedVideoSummary:
+    if profile not in {"summary", "brief"}:
+        raise InfoCuratorError("worker_config_invalid", "视频总结服务配置无效。")
     canonical_url = canonicalize_video_url(url)
     endpoint = _service_endpoint(config.INFO_CURATOR_SERVICE_URL)
     timeout = aiohttp.ClientTimeout(total=config.INFO_CURATOR_REQUEST_TIMEOUT_SECONDS)
+    payload = {"url": canonical_url}
+    if profile == "brief":
+        payload["profile"] = "brief"
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 endpoint,
-                json={"url": canonical_url},
+                json=payload,
                 allow_redirects=False,
             ) as response:
                 raw = await response.content.read(MAX_WORKER_RESPONSE_BYTES + 1)
@@ -210,4 +237,15 @@ async def fetch_curated_video_summary(url: str) -> CuratedVideoSummary:
     value = _decode_json(raw)
     if status != 200:
         raise _worker_error(value)
-    return _validated_result(value)
+    result = _validated_result(value)
+    if result.profile != profile:
+        raise InfoCuratorError("worker_contract_mismatch", "视频总结服务返回无效数据。")
+    return result
+
+
+async def fetch_curated_video_summary(url: str) -> CuratedVideoSummary:
+    return await _fetch_curated_video(url, profile="summary")
+
+
+async def fetch_curated_video_brief(url: str) -> CuratedVideoSummary:
+    return await _fetch_curated_video(url, profile="brief")

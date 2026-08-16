@@ -146,9 +146,12 @@ def run_info_curator(
     *,
     executable: str | None = None,
     timeout_seconds: float | None = None,
+    profile: str = "summary",
 ) -> dict[str, object]:
     if not isinstance(url, str) or not 1 <= len(url) <= 2048:
         raise WorkerError("invalid_media_url")
+    if profile not in {"summary", "brief"}:
+        raise WorkerError("invalid_request")
     command = _resolve_executable(executable or os.getenv("INFO_CURATOR_CLI"))
     timeout = (
         timeout_seconds
@@ -166,9 +169,13 @@ def run_info_curator(
         work_root = Path(directory)
         work_root.chmod(0o700)
         output = work_root / "summary.md"
+        cli_args = [command, "summarize-video", url]
+        if profile == "brief":
+            cli_args.extend(["--profile", "brief"])
+        cli_args.extend(["--output", str(output)])
         try:
             process = subprocess.Popen(
-                [command, "summarize-video", url, "--output", str(output)],
+                cli_args,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -195,18 +202,24 @@ def run_info_curator(
         if not isinstance(value, dict) or set(value) != {
             "schema_version",
             "status",
+            "profile",
             "reused",
             "media_reused",
             "provider",
             "model",
+            "transcript_source",
+            "language",
             "output",
         }:
             raise WorkerError("worker_contract_mismatch")
         provider = value.get("provider")
         model = value.get("model")
+        transcript_source = value.get("transcript_source")
+        language = value.get("language")
         if (
             value.get("schema_version") != CLI_SUCCESS_SCHEMA
             or value.get("status") != "complete"
+            or value.get("profile") != profile
             or value.get("output") != str(output)
             or not isinstance(value.get("reused"), bool)
             or not isinstance(value.get("media_reused"), bool)
@@ -216,6 +229,11 @@ def run_info_curator(
             or not isinstance(model, str)
             or not 1 <= len(model) <= 160
             or any(ord(character) < 32 for character in model)
+            or transcript_source
+            not in {"creator_subtitle", "automatic_subtitle", "local_asr"}
+            or not isinstance(language, str)
+            or not 1 <= len(language) <= 35
+            or any(ord(character) < 32 for character in language)
         ):
             raise WorkerError("worker_contract_mismatch")
         return {
@@ -224,6 +242,9 @@ def run_info_curator(
             "markdown": _read_markdown(output),
             "provider": provider,
             "model": model,
+            "profile": profile,
+            "transcript_source": transcript_source,
+            "language": language,
             "reused": value["reused"],
             "media_reused": value["media_reused"],
         }
@@ -285,14 +306,25 @@ class VideoSummaryHandler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
-        if not isinstance(value, dict) or set(value) != {"url"} or not isinstance(value["url"], str):
+        if not isinstance(value, dict) or not isinstance(value.get("url"), str):
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if set(value) == {"url"}:
+            profile = "summary"
+        elif set(value) == {"url", "profile"} and value.get("profile") == "brief":
+            profile = "brief"
+        else:
             self._error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         if not _JOB_SLOT.acquire(blocking=False):
             self._error(HTTPStatus.CONFLICT, "worker_busy")
             return
         try:
-            result = run_info_curator(value["url"])
+            result = (
+                run_info_curator(value["url"])
+                if profile == "summary"
+                else run_info_curator(value["url"], profile="brief")
+            )
         except WorkerError as error:
             status = (
                 HTTPStatus.UNPROCESSABLE_ENTITY

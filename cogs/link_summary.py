@@ -10,6 +10,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from core import ai_client
 from core.info_curator_client import (
     InfoCuratorError,
+    fetch_curated_video_brief,
     fetch_curated_video_summary,
     is_bilibili_url,
 )
@@ -123,6 +124,33 @@ async def fetch_and_summarize(
         logger.exception("AI 总结失败: %s", e)
         return False, "❌ AI 总结过程中发生未知错误。"
 
+async def fetch_brief(
+    url: str,
+) -> tuple[bool, discord.Embed | list[discord.Embed] | str]:
+    if not is_bilibili_url(url):
+        return False, "❌ `/brief` 仅支持完整的 B站 BV 视频链接。"
+    try:
+        async with _CURATED_VIDEO_SLOT:
+            summary = await fetch_curated_video_brief(url)
+    except InfoCuratorError as error:
+        logger.warning("Info Curator 视频精简摘要失败 [%s]", error.code)
+        return False, f"❌ {error.message}"
+    except Exception:
+        logger.exception("Info Curator 视频精简摘要发生未知错误")
+        return False, "❌ 处理 B站视频精简摘要时发生未知错误。"
+    embeds = create_curated_video_embeds(
+        summary.markdown,
+        provider=summary.provider,
+        model=summary.model,
+        footer_text=(
+            f"✨ {summary.model} · {summary.transcript_source} / {summary.language}"
+        ),
+    )
+    for embed in embeds:
+        embed.title = embed.title.replace("内容总结", "精简摘要")
+    return True, embeds[0] if len(embeds) == 1 else embeds
+
+
 class LinkSummary(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -178,6 +206,29 @@ class LinkSummary(commands.Cog):
                     await interaction.followup.send(embed=embed)
             else:
                 await interaction.edit_original_response(content=f"**提取来源:** {url}", embed=result)
+        else:
+            await interaction.edit_original_response(content=result)
+
+    @app_commands.command(name="brief", description="快速提取 B站视频的核心信息")
+    @app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
+    async def brief(self, interaction: discord.Interaction, url: str):
+        await interaction.response.send_message("👀 正在生成精简摘要，请稍候...")
+
+        async with self._summary_slots:
+            success, result = await fetch_brief(url)
+
+        if success:
+            if isinstance(result, list):
+                await interaction.edit_original_response(
+                    content=f"**提取来源:** {url}",
+                    embed=result[0],
+                )
+                for embed in result[1:]:
+                    await interaction.followup.send(embed=embed)
+            else:
+                await interaction.edit_original_response(
+                    content=f"**提取来源:** {url}", embed=result
+                )
         else:
             await interaction.edit_original_response(content=result)
 

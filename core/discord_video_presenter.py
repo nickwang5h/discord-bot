@@ -51,8 +51,15 @@ def split_curated_markdown(markdown: str) -> list[str]:
 
 
 def create_curated_video_embeds(
-    markdown: str, *, provider: str, model: str
+    markdown: str,
+    *,
+    provider: str,
+    model: str,
+    footer_text: str | None = None,
 ) -> list[discord.Embed]:
+    footer = footer_text or f"✨ Powered by {provider} ({model})"
+    if not 1 <= len(footer) <= 2048 or any(ord(character) < 32 for character in footer):
+        raise ValueError("Discord video footer is invalid")
     chunks = split_curated_markdown(markdown)
     embeds: list[discord.Embed] = []
     for index, chunk in enumerate(chunks, start=1):
@@ -62,6 +69,6 @@ def create_curated_video_embeds(
             description=chunk,
             color=discord.Color.from_rgb(251, 114, 153),
         )
-        embed.set_footer(text=f"✨ Powered by {provider} ({model})")
+        embed.set_footer(text=footer)
         embeds.append(embed)
     return embeds
