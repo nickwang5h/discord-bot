@@ -238,8 +238,8 @@ def _worker_error(value: object) -> InfoCuratorError:
     ):
         return InfoCuratorError("worker_contract_mismatch", "视频总结服务返回无效数据。")
     messages = {
-        "unsupported_media_url": "请使用完整的 B站 BV 视频链接。",
-        "media_not_available": "无法取得该 B站视频的可用字幕。",
+        "unsupported_media_url": "请使用完整的 B站 BV 视频链接或 YouTube 视频链接。",
+        "media_not_available": "无法取得该视频的可用字幕（视频可能未提供字幕或受风控限制）。",
         "media_contract_mismatch": "字幕验证失败，未生成总结。",
         "transcript_invalid": "字幕验证失败，未生成总结。",
         "summary_attempt_exhausted": "该视频的当前总结身份此前已失败，需要管理员处理。",
