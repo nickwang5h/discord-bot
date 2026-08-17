@@ -14,7 +14,6 @@ services:
     stop_grace_period: 30s
     environment:
       INFO_CURATOR_ENV_FILE: /run/info-curator/runtime.env
-      INFO_CURATOR_VIDEO_PROVIDER_SETTINGS: /run/info-curator/settings-openrouter.toml
       INFO_CURATOR_VIDEO_ROOT: /var/lib/info-curator/video-summaries
       MEDIA_TRANSCRIBER_ENV_FILE: /run/media-transcriber/runtime.env
     volumes:
