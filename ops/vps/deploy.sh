@@ -100,7 +100,9 @@ check_private_dir "$media_runtime"
 check_private_dir "$video_state"
 check_private_file "$runtime_dir/runtime.env"
 check_private_file "$info_runtime/runtime.env"
-check_private_file "$info_runtime/settings-openrouter.toml"
+if [[ -f "$info_runtime/settings-openrouter.toml" ]]; then
+    check_private_file "$info_runtime/settings-openrouter.toml"
+fi
 check_private_file "$media_runtime/runtime.env"
 
 if [[ ! -f "$runtime_dir/state/settings.json" ]]; then
