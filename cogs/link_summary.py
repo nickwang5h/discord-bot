@@ -9,6 +9,7 @@ import trafilatura
 from core import ai_client
 from core.info_curator_client import (
     InfoCuratorError,
+    extract_media_url,
     fetch_curated_video_brief,
     fetch_curated_video_summary,
     is_bilibili_url,
@@ -150,19 +151,20 @@ class LinkSummary(commands.Cog):
     async def summary(self, interaction: discord.Interaction, url: str):
         await interaction.response.send_message("👀 正在尝试获取内容并生成总结，请稍候...")
         
+        display_url = extract_media_url(url) or url
         async with self._summary_slots:
             success, result = await fetch_and_summarize(url)
         
         if success:
             if isinstance(result, list):
                 await interaction.edit_original_response(
-                    content=f"**提取来源:** {url}",
+                    content=f"**提取来源:** {display_url}",
                     embed=result[0],
                 )
                 for embed in result[1:]:
                     await interaction.followup.send(embed=embed)
             else:
-                await interaction.edit_original_response(content=f"**提取来源:** {url}", embed=result)
+                await interaction.edit_original_response(content=f"**提取来源:** {display_url}", embed=result)
         else:
             await interaction.edit_original_response(content=result)
 
@@ -171,20 +173,21 @@ class LinkSummary(commands.Cog):
     async def brief(self, interaction: discord.Interaction, url: str):
         await interaction.response.send_message("👀 正在生成精简摘要，请稍候...")
 
+        display_url = extract_media_url(url) or url
         async with self._summary_slots:
             success, result = await fetch_brief(url)
 
         if success:
             if isinstance(result, list):
                 await interaction.edit_original_response(
-                    content=f"**提取来源:** {url}",
+                    content=f"**提取来源:** {display_url}",
                     embed=result[0],
                 )
                 for embed in result[1:]:
                     await interaction.followup.send(embed=embed)
             else:
                 await interaction.edit_original_response(
-                    content=f"**提取来源:** {url}", embed=result
+                    content=f"**提取来源:** {display_url}", embed=result
                 )
         else:
             await interaction.edit_original_response(content=result)

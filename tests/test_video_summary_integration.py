@@ -11,11 +11,13 @@ import config
 from core.info_curator_client import (
     InfoCuratorError,
     canonicalize_video_url,
+    extract_media_url,
     fetch_curated_video_brief,
     fetch_curated_video_summary,
     is_bilibili_url,
     is_supported_video_url,
     is_youtube_url,
+    resolve_canonical_video_url,
 )
 from core.video_summary_worker import WorkerError, create_server, run_info_curator
 
@@ -23,14 +25,24 @@ from core.video_summary_worker import WorkerError, create_server, run_info_curat
 class InfoCuratorClientTests(unittest.IsolatedAsyncioTestCase):
     def test_bilibili_input_is_canonical_and_rejects_short_or_multipart_links(self):
         self.assertTrue(is_bilibili_url("https://b23.tv/example"))
+        self.assertTrue(is_bilibili_url("【AI 编程 | Syntax-哔哩哔哩】 https://b23.tv/example"))
         self.assertTrue(is_youtube_url("https://youtu.be/dQw4w9WgXcQ"))
         self.assertTrue(is_supported_video_url("https://www.bilibili.com/video/BV1234567890"))
         self.assertTrue(is_supported_video_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        self.assertTrue(is_supported_video_url("【测试】 https://www.bilibili.com/video/BV1234567890"))
         self.assertFalse(is_supported_video_url("https://example.com/article"))
+        self.assertEqual(
+            extract_media_url("【AI 编程正在毒害你我的健康 | Syntax-哔哩哔哩】 https://b23.tv/uiCRxMU"),
+            "https://b23.tv/uiCRxMU",
+        )
         self.assertEqual(
             canonicalize_video_url(
                 "https://www.bilibili.com/video/BV1234567890?spm_id_from=tracking"
             ),
+            "https://www.bilibili.com/video/BV1234567890",
+        )
+        self.assertEqual(
+            canonicalize_video_url("https://m.bilibili.com/video/BV1234567890"),
             "https://www.bilibili.com/video/BV1234567890",
         )
         self.assertEqual(
@@ -49,6 +61,31 @@ class InfoCuratorClientTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(short.exception.code, "unsupported_media_url")
         self.assertEqual(multipart.exception.code, "unsupported_media_url")
+
+    async def test_resolve_canonical_video_url_b23_redirect(self):
+        class FakeResponse:
+            def __init__(self, location):
+                self.status = 302
+                self.headers = {"Location": location}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+        class FakeSession:
+            def __init__(self, location):
+                self.location = location
+
+            def get(self, *_args, **_kwargs):
+                return FakeResponse(self.location)
+
+        canonical = await resolve_canonical_video_url(
+            "【AI 编程正在毒害你我的健康 | Syntax-哔哩哔哩】 https://b23.tv/uiCRxMU",
+            session=FakeSession("https://www.bilibili.com/video/BV1rqbX6fE9A?share_medium=android"),
+        )
+        self.assertEqual(canonical, "https://www.bilibili.com/video/BV1rqbX6fE9A")
 
     async def test_external_or_https_worker_endpoint_is_rejected_before_network(self):
         for endpoint in (

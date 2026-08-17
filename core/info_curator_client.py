@@ -12,7 +12,7 @@ import config
 
 
 BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"}
-CANONICAL_BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com"}
+CANONICAL_BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 CANONICAL_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com"}
 ALL_VIDEO_HOSTS = BILIBILI_HOSTS | YOUTUBE_HOSTS
@@ -23,6 +23,7 @@ ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 MAX_URL_CHARS = 2048
 MAX_WORKER_RESPONSE_BYTES = 128 * 1024
 MAX_MARKDOWN_CHARS = 32_000
+MAX_SHORT_REDIRECTS = 3
 
 
 class InfoCuratorError(RuntimeError):
@@ -44,15 +45,30 @@ class CuratedVideoSummary:
     media_reused: bool
 
 
+def extract_media_url(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    val = text.strip()
+    match = re.search(r"https?://[^\s\"'<>]+", val)
+    if match:
+        return match.group(0).rstrip(".,;:!?)]}>\"'")
+    if BVID_RE.fullmatch(val):
+        return f"https://www.bilibili.com/video/{val}"
+    if YOUTUBE_VIDEO_ID_RE.fullmatch(val):
+        return f"https://www.youtube.com/watch?v={val}"
+    return val
+
+
 def _safe_url_parts(url: str):
+    cleaned = extract_media_url(url)
     if (
-        not isinstance(url, str)
-        or not 1 <= len(url) <= MAX_URL_CHARS
-        or any(ord(character) < 32 for character in url)
+        not isinstance(cleaned, str)
+        or not 1 <= len(cleaned) <= MAX_URL_CHARS
+        or any(ord(character) < 32 for character in cleaned)
     ):
         raise InfoCuratorError("invalid_media_url", "视频链接格式无效。")
     try:
-        parsed = urlsplit(url.strip())
+        parsed = urlsplit(cleaned.strip())
         port = parsed.port
     except ValueError as error:
         raise InfoCuratorError("invalid_media_url", "视频链接格式无效。") from error
@@ -137,6 +153,55 @@ def canonicalize_video_url(url: str) -> str:
         "unsupported_media_url",
         "只支持完整的 B站 BV 链接或 YouTube 视频链接。",
     )
+
+
+async def _resolve_b23_url(url: str, session: aiohttp.ClientSession) -> str:
+    from urllib.parse import urljoin
+    current_url = url
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Referer": "https://www.bilibili.com/",
+    }
+    for redirect_count in range(MAX_SHORT_REDIRECTS + 1):
+        parsed = _safe_url_parts(current_url)
+        host = parsed.hostname.lower()
+        if host in CANONICAL_BILIBILI_HOSTS:
+            return current_url
+        if host != "b23.tv" or redirect_count >= MAX_SHORT_REDIRECTS:
+            raise InfoCuratorError("unsupported_media_url", "B站短链接跳转到了不支持的地址。")
+
+        try:
+            async with session.get(current_url, headers=headers, allow_redirects=False) as response:
+                if response.status not in {301, 302, 303, 307, 308}:
+                    raise InfoCuratorError("unsupported_media_url", "B站短链接未能解析到视频地址。")
+                location = response.headers.get("Location")
+        except InfoCuratorError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            raise InfoCuratorError("unsupported_media_url", "解析 B站短链接失败。") from error
+
+        if not location:
+            raise InfoCuratorError("unsupported_media_url", "B站短链接缺少跳转地址。")
+        current_url = urljoin(current_url, location)
+
+    raise InfoCuratorError("unsupported_media_url", "B站短链接跳转次数过多。")
+
+
+async def resolve_canonical_video_url(
+    url: str, *, session: aiohttp.ClientSession | None = None
+) -> str:
+    cleaned = extract_media_url(url)
+    parsed = _safe_url_parts(cleaned)
+    hostname = parsed.hostname.lower()
+    if hostname == "b23.tv":
+        if session is not None:
+            resolved = await _resolve_b23_url(cleaned, session)
+        else:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as temp_session:
+                resolved = await _resolve_b23_url(cleaned, temp_session)
+        return canonicalize_video_url(resolved)
+    return canonicalize_video_url(cleaned)
 
 
 def _service_endpoint(value: str) -> str:
@@ -260,14 +325,14 @@ async def _fetch_curated_video(
 ) -> CuratedVideoSummary:
     if profile not in {"summary", "brief"}:
         raise InfoCuratorError("worker_config_invalid", "视频总结服务配置无效。")
-    canonical_url = canonicalize_video_url(url)
     endpoint = _service_endpoint(config.INFO_CURATOR_SERVICE_URL)
     timeout = aiohttp.ClientTimeout(total=config.INFO_CURATOR_REQUEST_TIMEOUT_SECONDS)
-    payload = {"url": canonical_url}
-    if profile == "brief":
-        payload["profile"] = "brief"
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
+            canonical_url = await resolve_canonical_video_url(url, session=session)
+            payload = {"url": canonical_url}
+            if profile == "brief":
+                payload["profile"] = "brief"
             async with session.post(
                 endpoint,
                 json=payload,
