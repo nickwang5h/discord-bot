@@ -13,8 +13,12 @@ import config
 
 BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"}
 CANONICAL_BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com"}
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+CANONICAL_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com"}
+ALL_VIDEO_HOSTS = BILIBILI_HOSTS | YOUTUBE_HOSTS
 SERVICE_HOSTS = {"video-summary", "127.0.0.1", "localhost", "::1"}
 BVID_RE = re.compile(r"^BV[A-Za-z0-9]{10,20}$")
+YOUTUBE_VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 MAX_URL_CHARS = 2048
 MAX_WORKER_RESPONSE_BYTES = 128 * 1024
@@ -46,12 +50,12 @@ def _safe_url_parts(url: str):
         or not 1 <= len(url) <= MAX_URL_CHARS
         or any(ord(character) < 32 for character in url)
     ):
-        raise InfoCuratorError("invalid_media_url", "B站链接格式无效。")
+        raise InfoCuratorError("invalid_media_url", "视频链接格式无效。")
     try:
         parsed = urlsplit(url.strip())
         port = parsed.port
     except ValueError as error:
-        raise InfoCuratorError("invalid_media_url", "B站链接格式无效。") from error
+        raise InfoCuratorError("invalid_media_url", "视频链接格式无效。") from error
     if (
         parsed.scheme != "https"
         or not parsed.hostname
@@ -60,7 +64,7 @@ def _safe_url_parts(url: str):
         or parsed.fragment
         or port not in {None, 443}
     ):
-        raise InfoCuratorError("unsupported_media_url", "只支持完整的 HTTPS B站 BV 链接。")
+        raise InfoCuratorError("unsupported_media_url", "只支持完整的 HTTPS B站或 YouTube 链接。")
     return parsed
 
 
@@ -72,26 +76,67 @@ def is_bilibili_url(url: str) -> bool:
     return parsed.hostname.lower() in BILIBILI_HOSTS
 
 
+def is_youtube_url(url: str) -> bool:
+    try:
+        parsed = _safe_url_parts(url)
+    except InfoCuratorError:
+        return False
+    return parsed.hostname.lower() in YOUTUBE_HOSTS
+
+
+def is_supported_video_url(url: str) -> bool:
+    try:
+        parsed = _safe_url_parts(url)
+    except InfoCuratorError:
+        return False
+    return parsed.hostname.lower() in ALL_VIDEO_HOSTS
+
+
 def canonicalize_video_url(url: str) -> str:
     parsed = _safe_url_parts(url)
-    if parsed.hostname.lower() not in CANONICAL_BILIBILI_HOSTS:
+    hostname = parsed.hostname.lower()
+    if hostname in CANONICAL_BILIBILI_HOSTS:
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 2 or parts[0] != "video" or not BVID_RE.fullmatch(parts[1]):
+            raise InfoCuratorError(
+                "unsupported_media_url",
+                "请使用完整的 www.bilibili.com/video/BV... 链接。",
+            )
+        page_values = parse_qs(parsed.query, keep_blank_values=True).get("p", [])
+        if any(value != "1" for value in page_values):
+            raise InfoCuratorError(
+                "unsupported_media_url",
+                "带分P的 B站链接暂不支持，请提交视频第一P的完整 BV 链接。",
+            )
+        return f"https://www.bilibili.com/video/{parts[1]}"
+
+    if hostname in YOUTUBE_HOSTS:
+        video_id: str | None = None
+        if hostname == "youtu.be":
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) == 1 and YOUTUBE_VIDEO_ID_RE.fullmatch(parts[0]):
+                video_id = parts[0]
+        elif hostname in {"www.youtube.com", "youtube.com", "m.youtube.com"}:
+            if parsed.path == "/watch":
+                qs = parse_qs(parsed.query, keep_blank_values=True)
+                v_list = qs.get("v", [])
+                if len(v_list) == 1 and YOUTUBE_VIDEO_ID_RE.fullmatch(v_list[0]):
+                    video_id = v_list[0]
+            elif parsed.path.startswith(("/embed/", "/shorts/", "/v/", "/live/")):
+                parts = [part for part in parsed.path.split("/") if part]
+                if len(parts) >= 2 and YOUTUBE_VIDEO_ID_RE.fullmatch(parts[1]):
+                    video_id = parts[1]
+        if video_id:
+            return f"https://www.youtube.com/watch?v={video_id}"
         raise InfoCuratorError(
             "unsupported_media_url",
-            "请使用完整的 www.bilibili.com/video/BV... 链接。",
+            "请使用完整的 YouTube 视频链接（如 youtube.com/watch?v=... 或 youtu.be/...）。",
         )
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) != 2 or parts[0] != "video" or not BVID_RE.fullmatch(parts[1]):
-        raise InfoCuratorError(
-            "unsupported_media_url",
-            "请使用完整的 www.bilibili.com/video/BV... 链接。",
-        )
-    page_values = parse_qs(parsed.query, keep_blank_values=True).get("p", [])
-    if any(value != "1" for value in page_values):
-        raise InfoCuratorError(
-            "unsupported_media_url",
-            "带分P的 B站链接暂不支持，请提交视频第一P的完整 BV 链接。",
-        )
-    return f"https://www.bilibili.com/video/{parts[1]}"
+
+    raise InfoCuratorError(
+        "unsupported_media_url",
+        "只支持完整的 B站 BV 链接或 YouTube 视频链接。",
+    )
 
 
 def _service_endpoint(value: str) -> str:

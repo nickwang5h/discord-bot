@@ -250,19 +250,17 @@ Wikipedia 请求从 WSL canonical `/root/.config/discord-bot/runtime.env` 或部
 
 随后 `trafilatura` 在线程中提取正文，最多向模型提供 20,000 字符。自动监听每位用户 60 秒一次，整个 Cog 最多并发两个总结任务；`/summary` 同样共享并发上限。
 
-YouTube 链接继续使用 `youtube-transcript-api` 获取字幕，不下载视频媒体。
-
-完整 B站 BV 链接不再由 Bot 抓字幕或再次调用自己的 provider。Bot 先把输入收窄为
-canonical `https://www.bilibili.com/video/BV...`（当前拒绝短链和 `p>1`），然后通过
+完整 B站 BV 链接与 YouTube 视频链接统一通过视频总结 sidecar 链路处理。Bot 先把输入收窄为
+canonical `https://www.bilibili.com/video/BV...` 或 `https://www.youtube.com/watch?v=...`（拒绝未知参数和无效分P），然后通过
 固定的 Compose 内网地址向 `core.info_curator_client` 发起一个无重试请求。客户端拒绝
-外部 service host、redirect、超大响应和未知 envelope；同一 Bot 进程只允许一个 B站
+外部 service host、redirect、超大响应和未知 envelope；同一 Bot 进程只允许一个视频
 总结在 sidecar 中执行。
 
 `core.video_summary_worker` 是 Python 3.12 sidecar 内的最小 HTTP 网关。它只接受一个
 有界 URL，使用参数数组执行 `info-curator summarize-video --output ...`，严格解析 owner
 CLI 成功/错误 envelope，并返回有界 Markdown 与 provider/model attribution。它不解析
 字幕、不持有 Discord token、不接受任意命令，也不把 stderr、Cookie、provider response
-或 artifact 路径返回 Bot。Info Curator 再通过 Media Transcriber CLI 获取和验证字幕；
+或 artifact 路径返回 Bot。Info Curator 再通过 Media Transcriber CLI 获取和验证字幕（B站走 API，YouTube 走 Innertube fast path）；
 Cookie、模型凭据、完整字幕和模型 quarantine 分别留在各 owner runtime/state。任何远程
 模型失败都原样终止，不回退到 Bot 的 `ask_ai()`，避免对同一视频进行第二次隐式生成。
 完整 Curator Markdown 是通用 sidecar 结果；Discord 专用 presenter 隐藏由 owner
@@ -270,8 +268,8 @@ Cookie、模型凭据、完整字幕和模型 quarantine 分别留在各 owner r
 description 不超过 3900 字符的 embed。精简不修改 sidecar envelope 或持久 artifact，也不
 匹配普通正文中的“引用”或一般链接；分段禁止调用通用 `create_ai_embed()` 的截断路径。
 
-普通网页正文和 YouTube 字幕仍由 Bot 标记为不可信数据并最多向自身模型提供 20,000
-字符。B站输入隔离与逐条时间引用验证由 Info Curator/Media Transcriber 契约负责。
+普通网页正文仍由 Bot 标记为不可信数据并最多向自身模型提供 20,000
+字符。B站与 YouTube 视频输入隔离与逐条时间引用验证由 Info Curator/Media Transcriber 契约负责。
 
 ## 8. 存储与密钥
 

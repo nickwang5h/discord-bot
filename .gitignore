@@ -79,6 +79,11 @@ coverage/
 *.sqlite-shm
 *.duckdb.wal
 
+# Local scratch work and Pi runtime
+scratch/
+.pi/
+*.staging
+
 # Project-local VS Code zsh runtime state; keep .zshrc tracked.
 /.vscode/zsh/.zcompdump*
 /.vscode/zsh/.zsh_history*

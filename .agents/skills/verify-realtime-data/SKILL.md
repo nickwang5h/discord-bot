@@ -1,15 +1,38 @@
 ---
 name: verify-realtime-data
-description: Ensures agents do not rely on outdated training data. Mandates using scripts or network requests to verify external facts (like available API models, library versions, etc.) before making assumptions.
+description: Verify changing external facts such as model IDs, API behavior, versions, and limits without relying on training memory. Use only when project policy and explicit owner scope permit a bounded live check.
 ---
 
 # Real-time Fact Checking & API Verification
 
 ## Context
-As an AI, your internal training data has a cutoff date and may be outdated (e.g., it may not include newer models released in 2025/2026 like Gemma 4, Nemotron 3 Ultra 550B, or Qwen 3). The user operates in the current real-time environment. Relying on outdated training data leads to frustrating back-and-forth corrections.
 
-## Rules
-1. **Never Assume Based on Training Data**: When the user mentions a specific version, API model name, or external fact that contradicts your internal knowledge, **do not correct the user or assume it is a typo**.
-2. **Verify via Script/Network First**: Before implementing fallback lists, adding external dependencies, or claiming something "does not exist", you MUST write and execute a short script (e.g., Python `urllib`/`requests`) or a shell command (e.g., `curl`) to fetch the live data and confirm it.
-3. **Example - OpenRouter Models**: If modifying OpenRouter models, you must run a script to fetch `https://openrouter.ai/api/v1/models` and dynamically verify if the model ID (e.g., `google/gemma-4-31b-it:free`) actually exists in the current environment before modifying the codebase.
-4. **Proactive Verification**: Do your own verification silently in the background using your terminal/execution tools. Do not ask the user "Are you sure this exists?" without having thoroughly checked it programmatically first.
+Model catalogs, API behavior, versions, prices, limits, and source availability can
+change after training. Do not "correct" a user-supplied current fact from memory or
+quietly treat it as a typo.
+
+## Authorization boundary
+
+1. Read and follow repository `AGENTS.md` first. A live provider or network check is
+   allowed only when the active request has the Owner scope required there.
+2. Without that scope, use tracked configuration, lockfiles, cached local catalogs,
+   fixtures, and official documentation already supplied by the user. Clearly report
+   that live verification was not run and why.
+3. Never make a network call silently, inspect private runtime state, or add a
+   throwaway dependency/script merely to probe a transient fact.
+
+## Authorized workflow
+
+1. Prefer the repository's existing bounded diagnostic, such as the documented
+   strict live health check, over a new ad hoc command.
+2. If no project check exists, make at most the smallest read-only request to an
+   official endpoint with a short timeout and bounded response. Do not log keys,
+   authorization headers, Cookies, private payloads, or full provider responses.
+3. Validate the exact user-supplied model/version/limit instead of expanding into a
+   provider-wide inventory or unrelated availability survey.
+4. Record the source, observation time, result, and whether failure means code error,
+   authentication, rate limiting, network failure, or a genuinely absent item.
+
+For example, verify an OpenRouter model against its official catalog only after the
+Owner authorizes a bounded live provider check. Ordinary offline tests and local
+refactors must not trigger that request.

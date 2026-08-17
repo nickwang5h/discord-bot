@@ -8,18 +8,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MEDIA_TRANSCRIBER_CLI=/usr/local/bin/media-transcriber \
     VIDEO_SUMMARY_WORKER_HOST=0.0.0.0 \
     VIDEO_SUMMARY_WORKER_PORT=8080 \
-    VIDEO_SUMMARY_JOB_TIMEOUT_SECONDS=190
+    VIDEO_SUMMARY_JOB_TIMEOUT_SECONDS=190 \
+    NODE_PATH=/opt/media-transcriber/node_modules
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=info_curator /src /opt/info-curator/src
 COPY --from=media_transcriber /src /opt/media-transcriber/src
+COPY --from=media_transcriber /package.json /package-lock.json /opt/media-transcriber/
 COPY core/video_summary_worker.py /app/video_summary_worker.py
 
-RUN groupadd --gid 1000 worker \
+RUN cd /opt/media-transcriber && npm ci --omit=dev \
+    && groupadd --gid 1000 worker \
     && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin worker \
     && mkdir -p /var/lib/info-curator \
-    && chown 1000:1000 /var/lib/info-curator /app \
+    && chown -R 1000:1000 /var/lib/info-curator /app /opt/media-transcriber \
     && printf '%s\n' '#!/bin/sh' 'exec python -m content_enrichment "$@"' \
        > /usr/local/bin/info-curator \
     && printf '%s\n' '#!/bin/sh' 'exec python -m media_transcriber "$@"' \

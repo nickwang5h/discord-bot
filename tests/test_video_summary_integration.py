@@ -14,6 +14,8 @@ from core.info_curator_client import (
     fetch_curated_video_brief,
     fetch_curated_video_summary,
     is_bilibili_url,
+    is_supported_video_url,
+    is_youtube_url,
 )
 from core.video_summary_worker import WorkerError, create_server, run_info_curator
 
@@ -21,11 +23,23 @@ from core.video_summary_worker import WorkerError, create_server, run_info_curat
 class InfoCuratorClientTests(unittest.IsolatedAsyncioTestCase):
     def test_bilibili_input_is_canonical_and_rejects_short_or_multipart_links(self):
         self.assertTrue(is_bilibili_url("https://b23.tv/example"))
+        self.assertTrue(is_youtube_url("https://youtu.be/dQw4w9WgXcQ"))
+        self.assertTrue(is_supported_video_url("https://www.bilibili.com/video/BV1234567890"))
+        self.assertTrue(is_supported_video_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        self.assertFalse(is_supported_video_url("https://example.com/article"))
         self.assertEqual(
             canonicalize_video_url(
                 "https://www.bilibili.com/video/BV1234567890?spm_id_from=tracking"
             ),
             "https://www.bilibili.com/video/BV1234567890",
+        )
+        self.assertEqual(
+            canonicalize_video_url("https://youtu.be/dQw4w9WgXcQ"),
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        )
+        self.assertEqual(
+            canonicalize_video_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10s"),
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         )
         with self.assertRaises(InfoCuratorError) as short:
             canonicalize_video_url("https://b23.tv/example")
