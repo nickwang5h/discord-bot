@@ -6,19 +6,18 @@ Discord Bot owns user interaction, bounded job delivery, and result presentation
 does not become the media or semantic-processing worker. Work directly in this
 repository; an ordinary project-local request does not need a Personal Ops task first.
 
-Discord Bot is observation-only during the initial Personal Ops v2 pilot. Use
-`/root/Projects/personal-ops/docs/FEDERATED-OPERATIONS.md` for L0–L3 boundaries;
-submit `ops-report` for meaningful durable changes, especially risks, decisions, or
-runtime changes. L2/L3 requires prior Owner scope. Push, merge, deploy, provider/live
-checks, private runtime access, and service changes remain explicitly authorized.
+Follow the global L0/L1/L2 execution policy. Ordinary work starts and ends in this repository;
+do not create an `ops-report`, receipt, reconciliation update, or Personal Ops task. A named public
+provider/live check authorizes that bounded check. Private runtime access, deployment, credentials,
+destructive data work, and service changes remain L2.
 
 ## Start here
 
 - Work from `/root/Projects/discord-bot` and inspect `git status --short --branch`.
-- Read `.agents/skills/maintain-architecture/SKILL.md` before planning or changing
-  code, configuration, jobs, dependencies, automation, or documentation.
-- Read `arch.md` completely for broad changes; for narrow work, read the affected
-  architecture section and the complete execution path first.
+- Read `.agents/skills/maintain-architecture/SKILL.md` only for structural, dependency, runtime,
+  automation, or broad architecture work—not for a narrow bug/configuration edit.
+- Read `arch.md` completely only for broad changes; for narrow work, trace the affected execution
+  path directly.
 - Preserve unrelated and pre-existing working-tree changes. Use a separate Git
   worktree when another agent is editing the same repository.
 
@@ -57,8 +56,9 @@ checks, private runtime access, and service changes remain explicitly authorized
   or rate-limited payload.
 - JSON state uses `core.storage.JsonStore` and atomic updates. Do not directly
   overwrite settings/cache files.
-- Commits, pushes, merges, deployments, live provider checks, and service changes
-  require explicit owner scope.
+- A direct implementation request authorizes routine personal commit/push, and a named public live
+  check authorizes that bounded check. Diverged-history merge, deployment, private runtime access,
+  and service changes remain L2.
 
 ## Change rules
 
@@ -75,21 +75,11 @@ checks, private runtime access, and service changes remain explicitly authorized
 
 ## Verification
 
-Run the smallest relevant test first, then the repository validation:
-
-```bash
-python -m unittest -v <relevant local test module>
-python scripts/validate.py --allow-missing-secrets
-git diff --check
-git status --short --branch
-```
-
-Use `python scripts/healthcheck.py --strict --live` only when the owner explicitly
-requests external verification. Report offline/live checks not run and why.
+Run the closest relevant test once, then `git diff --check`. Run
+`python scripts/validate.py --allow-missing-secrets` only when the change can affect shared runtime
+configuration or command wiring. Use the strict live healthcheck only for an explicit live request.
 
 ## External governance
 
-Personal Ops tracks this repository as project `discord-bot` at
-`/root/Projects/discord-bot`. Its `state/control.json` is authoritative; generated
-Personal Ops Markdown must never be edited manually. Do not modify the control plane
-unless an explicit Personal Ops task authorizes it.
+Personal Ops retains historical portfolio/control records for explicit recovery and audit only.
+Ordinary Discord Bot work neither reads nor updates that control plane.
