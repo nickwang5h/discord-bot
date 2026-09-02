@@ -144,7 +144,10 @@ class LinkSummary(commands.Cog):
                 else:
                     await status_msg.edit(content=None, embed=result)
             else:
-                await status_msg.edit(content=result)
+                try:
+                    await status_msg.delete()
+                except discord.HTTPException:
+                    pass
 
     @app_commands.command(name="summary", description="一键总结网页长文、YouTube 或 B站视频内容")
     @app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)

@@ -72,6 +72,10 @@ class Weather(commands.Cog):
 
         await self._run_daily(channel)
 
+    @weather_daily.before_loop
+    async def before_weather_daily(self):
+        await self.bot.wait_until_ready()
+
     @app_commands.command(name="weather", description="查询指定城市天气 (默认 Ottawa)")
     @app_commands.describe(city="城市名称，例如 Ottawa, Sudbury, Toronto, Beijing")
     async def weather(self, interaction: discord.Interaction, city: str = "Ottawa"):

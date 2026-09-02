@@ -75,5 +75,55 @@ class SettingsCog(commands.Cog):
         formatted = ", ".join(city_list)
         await interaction.followup.send(f"✅ 已将每日天气播报城市更新为：`{formatted}`", ephemeral=True)
 
+    @app_commands.command(name="settings", description="[管理员] 查看当前机器人各项运行配置")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def view_settings(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        current = settings.load_settings()
+
+        def format_channel(key: str) -> str:
+            cid = current.get(key)
+            if not cid:
+                return "➖ *未配置*"
+            ch = self.bot.get_channel(int(cid))
+            return ch.mention if ch else f"`{cid}` (未缓存)"
+
+        cities = current.get("WEATHER_CITIES", ["Ottawa", "Sudbury"])
+        cities_str = ", ".join(str(c) for c in cities) if isinstance(cities, list) else str(cities)
+        model = current.get("GEMINI_MODEL", "gemini-3.6-flash")
+
+        weather_cid = current.get("WEATHER_CHANNEL_ID")
+        if weather_cid:
+            wch = self.bot.get_channel(int(weather_cid))
+            weather_val = wch.mention if wch else f"`{weather_cid}`"
+        else:
+            weather_val = f"{format_channel('NEWS_CHANNEL_ID')} *(继承新闻)*"
+
+        embed = discord.Embed(
+            title="⚙️ 机器人当前运行配置",
+            color=discord.Color.blue(),
+        )
+        embed.add_field(
+            name="📢 频道绑定",
+            value=(
+                f"- **综合新闻**: {format_channel('NEWS_CHANNEL_ID')}\n"
+                f"- **高级精读**: {format_channel('TEST_NEWS_CHANNEL_ID')}\n"
+                f"- **每日阅读**: {format_channel('READING_CHANNEL_ID')}\n"
+                f"- **天气预报**: {weather_val}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🌤️ 天气播报城市",
+            value=f"`{cities_str}`",
+            inline=False,
+        )
+        embed.add_field(
+            name="🤖 全局 AI 模型",
+            value=f"`{model}`",
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(SettingsCog(bot))
