@@ -15,6 +15,7 @@ from cogs.ai_daily import AIDaily
 from cogs.daily_reading import DailyReading
 from cogs.help import _build_help_embed
 from cogs.news_digest import NewsDigest
+from cogs.weather import Weather
 
 
 class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
@@ -59,8 +60,9 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                 patch.dict(AIDaily.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(DailyReading.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(NewsDigest.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
+                patch.dict(Weather.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
             ):
-                cogs = [AdvancedNews(bot), AIDaily(bot), DailyReading(bot), NewsDigest(bot)]
+                cogs = [AdvancedNews(bot), AIDaily(bot), DailyReading(bot), NewsDigest(bot), Weather(bot)]
                 try:
                     loop_specs = (
                         (cogs[0], "hourly_fetch"),
@@ -68,6 +70,7 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                         (cogs[1], "ai_news_daily"),
                         (cogs[2], "reading_loop"),
                         (cogs[3], "daily"),
+                        (cogs[4], "weather_daily"),
                     )
                     for cog, loop_name in loop_specs:
                         self.assertFalse(getattr(cog, loop_name).is_running(), loop_name)
@@ -78,7 +81,7 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                         for command in cog.get_app_commands()
                     }
                     self.assertTrue(
-                        {"test_hourly_fetch", "test_ai_news", "test_reading", "test_news"}
+                        {"test_hourly_fetch", "test_ai_news", "test_reading", "test_news", "test_weather"}
                         <= command_names
                     )
                 finally:

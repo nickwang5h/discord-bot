@@ -55,5 +55,12 @@ class SettingsCog(commands.Cog):
         settings.set_setting("READING_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将每日英文阅读推送频道设置为 {channel.mention}", ephemeral=True)
 
+    @app_commands.command(name="set_weather_channel", description="[管理员] 设置每日天气预报推送的频道")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_weather_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        settings.set_setting("WEATHER_CHANNEL_ID", str(channel.id))
+        await interaction.followup.send(f"✅ 已将每日天气预报推送频道设置为 {channel.mention}", ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(SettingsCog(bot))

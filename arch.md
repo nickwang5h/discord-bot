@@ -35,6 +35,7 @@
 │   ├── runtime_env.py         # WSL canonical owner-only env loader
 │   ├── news_cache.py          # 高级新闻缓存、批量去重和推送状态
 │   ├── data_ingester.py       # 高级新闻数据源定义与标准化
+│   ├── weather.py             # 异步 wttr.in + Open-Meteo 备用天气抓取与 Embed
 │   ├── web_fetcher.py         # 网页大小/超时/跳转/内网访问限制
 │   ├── bilibili_transcript.py # 仅供旧镜像回滚/离线回归，不在当前 /summary 路径
 │   ├── info_curator_client.py # 内部视频总结 sidecar 的严格 HTTP 客户端
@@ -50,6 +51,7 @@
 │   ├── news_digest.py         # 国际/加拿大/金融 RSS 日报
 │   ├── advanced_news.py       # 小时抓取、AI 打分和早晚精读
 │   ├── daily_reading.py       # 每日英文阅读
+│   ├── weather.py             # 每日天气定时播报与 /weather 查询
 │   ├── health.py              # /health 管理员诊断
 │   └── ...                    # 设置、生活和开发工具
 ├── scripts/
@@ -214,6 +216,17 @@ Discord channel.send（单次）
 高级新闻的 60 分钟 interval loop 会跳过进程启动时的即时执行，避免重启触发全量补抓；手动测试命令仍可立即抓取。同一进程只允许一个抓取任务运行。若所有 AI provider 都失败，本轮立即停止，不再用剩余批次持续冲击限流节点。
 
 高级新闻 JSON 分析直接调用失败即抛异常的 `generate_ai()`，不会经过可能返回用户提示文本的兼容接口。代码会校验 `news` 为数组，只接受原始 batch 中存在的 URL，恢复原始标题/来源，将分数限制在 0-1 后再写入缓存。启动时会移除缺少当前评分字段的旧 schema 缓存；这些记录无法参与现有筛选，且会阻止相同 URL 按新规则重新打分。
+
+## 6.5 每日天气预报
+
+`core.weather` 使用异步 `aiohttp` 提供零模型 Token 的天气数据抓取：
+
+1. 优先请求 `https://wttr.in/{city}?format=j1&lang=zh`，超时 12 秒；
+2. 若主接口失败，自动降级至 Open-Meteo Geocoding 与 Forecast 开放接口；
+3. 解析今日高低温、体感、紫外线、降水概率、降水量、明日预报与基于天气状况的智能出行提醒（烟尘、雷暴、冻雨、大雪等警报）；
+4. 格式化为 Discord Embed，根据严重警报、下雪、降雨、多云、晴朗匹配视觉色彩，并保留数据来源 Footer。
+
+`cogs.weather` 在每日 07:00 (`America/Toronto`) 通过 `core.jobs.run_delivery_job` 发送预设城市（默认 `Ottawa, Sudbury`）的早间天气播报至 `WEATHER_CHANNEL_ID`（未指定时降级至 `NEWS_CHANNEL_ID`）。同时提供 `/weather [city]` 交互式查询命令，及 `set_weather_channel` / `/test_weather` 管理员配置与测试入口。
 
 ## 7. 链接总结
 
