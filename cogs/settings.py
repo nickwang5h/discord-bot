@@ -62,5 +62,18 @@ class SettingsCog(commands.Cog):
         settings.set_setting("WEATHER_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将每日天气预报推送频道设置为 {channel.mention}", ephemeral=True)
 
+    @app_commands.command(name="set_weather_cities", description="[管理员] 设置每日天气播报的城市列表 (用逗号分隔)")
+    @app_commands.describe(cities="城市列表，例如: Ottawa, Sudbury 或 渥太华, 萨德伯里")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_weather_cities(self, interaction: discord.Interaction, cities: str):
+        await interaction.response.defer(ephemeral=True)
+        city_list = [c.strip() for c in cities.replace("，", ",").split(",") if c.strip()]
+        if not city_list:
+            await interaction.followup.send("❌ 城市列表不能为空。", ephemeral=True)
+            return
+        settings.set_setting("WEATHER_CITIES", city_list)
+        formatted = ", ".join(city_list)
+        await interaction.followup.send(f"✅ 已将每日天气播报城市更新为：`{formatted}`", ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(SettingsCog(bot))
