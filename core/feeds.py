@@ -23,6 +23,7 @@ class FeedSource:
 @dataclass(frozen=True, slots=True)
 class FeedItem:
     category: str
+    source_name: str
     title: str
     url: str
     summary: str
@@ -61,6 +62,7 @@ def _parse_feed(
         items.append(
             FeedItem(
                 category=source.category,
+                source_name=source.name or source.category,
                 title=title,
                 url=url,
                 summary=str(entry.get("summary", "")).strip(),

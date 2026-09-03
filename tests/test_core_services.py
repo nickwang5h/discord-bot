@@ -168,6 +168,7 @@ class FeedParsingTests(unittest.TestCase):
 
         expected = calendar.timegm(datetime(2026, 7, 22, 12, tzinfo=timezone.utc).timetuple())
         self.assertEqual(items[0].published_at, expected)
+        self.assertEqual(items[0].source_name, "World")
         self.assertEqual(items[0].title, "Story")
 
 
