@@ -123,6 +123,18 @@ class JsonStoreTests(unittest.TestCase):
                 self.assertEqual(added, 1)
                 self.assertEqual(len(news_cache.load_cache()), 1)
 
+    def test_news_cache_retains_delivered_identity_for_future_fetches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache_store = JsonStore(Path(directory) / "news.json", list)
+            item = {"title": "Delivered", "url": "https://example.com/delivered"}
+            with patch.object(news_cache, "_cache_store", cache_store):
+                news_cache.add_items([item])
+                news_cache.mark_as_pushed([item["url"]])
+
+                self.assertEqual(news_cache.get_unpushed_items(), [])
+                self.assertEqual(news_cache.filter_new_items([item]), [])
+                self.assertTrue(news_cache.load_cache()[0]["pushed"])
+
     def test_news_cache_prunes_legacy_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             cache_store = JsonStore(Path(directory) / "news.json", list)

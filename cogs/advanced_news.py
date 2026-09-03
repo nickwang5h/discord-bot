@@ -298,7 +298,6 @@ class AdvancedNews(commands.Cog):
         def mark_delivered(result):
             _embed, pushed_urls = result
             news_cache.mark_as_pushed(pushed_urls)
-            news_cache.clear_pushed()
 
         return await run_delivery_job(
             lock=self._digest_delivery_lock,

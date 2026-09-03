@@ -1,11 +1,8 @@
-import logging
 import time
 from typing import Any
 
 from config import STATE_ROOT
 from core.storage import JsonStore
-
-logger = logging.getLogger(__name__)
 
 CACHE_FILE = STATE_ROOT / "data" / "news_cache.json"
 MAX_CACHE_SIZE = 150
@@ -100,20 +97,6 @@ def mark_as_pushed(urls: list[str]) -> None:
         return cache
 
     _cache_store.update(update)
-
-
-def clear_pushed() -> int:
-    removed = 0
-
-    def update(cache: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        nonlocal removed
-        remaining = [item for item in cache if not item.get("pushed")]
-        removed = len(cache) - len(remaining)
-        return remaining
-
-    _cache_store.update(update)
-    logger.info("已从新闻缓存清理 %s 条已推送记录", removed)
-    return removed
 
 
 def filter_new_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

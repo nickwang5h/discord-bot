@@ -5,7 +5,7 @@
 ## 主要能力
 
 - 按能力路由：`/ask` 可选普通 Qwen、Qwen 双语网页检索或 Gemini 原生搜索；默认使用低成本 Qwen。
-- 低成本新闻：RSS/Hacker News 负责事实输入，模型只负责筛选和整理。
+- 低成本新闻：RSS/Hacker News 负责事实输入；综合新闻按独立信息增量伸缩，不用固定条数凑版面。
 - 稳定日报：抓取与生成可以重试，Discord 发送至多一次；并发触发会自动跳过。
 - 准时天气：每日早晨 07:00 定时推送多城市双通道（wttr.in + Open-Meteo 备用）天气预报与出行建议，支持 `/weather` 交互查询。
 - 游戏折扣与限免：周四 11:30 定时推送 Epic 每周限时免费游戏，每日 13:30 监控 Steam 愿望单降价与历史史低（零 Token 消耗），支持 `/epic_free`、`/deal` 与愿望单管理。
@@ -98,7 +98,7 @@ python bot.py
   继续通过独立 `/srv/discord-bot/runtime/runtime.env` 的 Compose `env_file`
   注入，不复制进镜像。
 - `data/secrets.json`：通过 `/set_gemini_key` 保存的本地密钥，已被 Git 忽略。
-- `BOT_STATE_DIR`：可选的绝对路径；设置后，`settings.json`、`data/secrets.json` 和 `data/news_cache.json` 全部从该目录读写，使部署代码和持久状态分离。
+- `BOT_STATE_DIR`：可选的绝对路径；设置后，`settings.json`、`data/secrets.json`、`data/news_cache.json` 和 `data/news_digest_history.json` 全部从该目录读写，使部署代码和持久状态分离。
 - `BOT_ENABLE_SCHEDULED_JOBS`：是否启动日报、阅读和高级资讯循环；关闭后管理员手动测试命令仍可使用。
 - `BOT_CONTACT_EMAIL`：Wikimedia 要求的机器人联系方式，只随 Wikipedia API 请求发送；日志和健康检查不会显示其值。
 - `INFO_CURATOR_SERVICE_URL`：固定内部 sidecar 地址；只允许 Compose 服务名或 loopback，禁止跳转和任意目标。
@@ -173,6 +173,7 @@ BOT_ENABLE_SCHEDULED_JOBS=false
 - `/recipe`：按已有食材生成菜谱。
 - `/fx`：查询 CAD 对 USD/CNY 汇率。
 - `/explain`、`/vs`、`/regex`、`/debug`：开发者工具。
-- `/test_news`、`/test_ai_news`、`/test_reading`：管理员手动测试定时内容。
+- `/test_news`：在当前频道生成完整候选范围的综合新闻测试，不读取或改写正式投递历史。
+- `/test_ai_news`、`/test_reading`：管理员手动测试其他定时内容。
 
 自动链接总结对每位用户有 60 秒冷却，并限制同时执行数量，避免频道刷屏和免费额度被瞬间耗尽。
