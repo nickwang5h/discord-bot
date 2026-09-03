@@ -228,6 +228,14 @@ Discord channel.send（单次）
 
 `cogs.weather` 在每日 07:00 (`America/Toronto`) 通过 `core.jobs.run_delivery_job` 发送预设城市（默认 `Ottawa, Sudbury`）的早间天气播报至 `WEATHER_CHANNEL_ID`（未指定时降级至 `NEWS_CHANNEL_ID`）。同时提供 `/weather [city]` 交互式查询命令，及 `set_weather_channel` / `/test_weather` 管理员配置与测试入口。
 
+## 6.6 游戏特惠与 Epic 喜加一监控
+
+`core.gaming` 与 `cogs.gaming` 提供零模型 Token 的自动化游戏降价与限免追踪：
+
+1. **Epic 每周限免**：每周四 11:30 (`America/Toronto`) 定时轮询 Epic 官方促销接口，提取本周免费领取名单、原价、截止时间及下周预告；采用 ISO 周去重缓存，每周至多发送一次至 `GAMING_CHANNEL_ID`（未设置时降级至 `NEWS_CHANNEL_ID`）；提供 `/epic_free` 交互查询。
+2. **Steam 愿望单降价监控**：每日 13:30 (`America/Toronto`) 通过免费 CheapShark REST API 轮询监控愿望单游戏，比对当前价格与历史最低价（`cheapestPriceEver`）；仅在游戏新打折或触及/打破历史史低时推送特惠 Embed；提供 `/deal <game>` 实时比价、`/watchlist` 查看愿望单、`/watch_game` 与 `/unwatch_game` 管理员增删接口。
+3. **独立频道隔离**：提供 `/set_gaming_channel` 绑定独立 `#gaming` 频道，保持内容分流。
+
 ## 7. 链接总结
 
 ### 7.1 `/ask` 联网检索

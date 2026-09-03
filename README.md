@@ -8,6 +8,7 @@
 - 低成本新闻：RSS/Hacker News 负责事实输入，模型只负责筛选和整理。
 - 稳定日报：抓取与生成可以重试，Discord 发送至多一次；并发触发会自动跳过。
 - 准时天气：每日早晨 07:00 定时推送多城市双通道（wttr.in + Open-Meteo 备用）天气预报与出行建议，支持 `/weather` 交互查询。
+- 游戏折扣与限免：周四 11:30 定时推送 Epic 每周限时免费游戏，每日 13:30 监控 Steam 愿望单降价与历史史低（零 Token 消耗），支持 `/epic_free`、`/deal` 与愿望单管理。
 - 格式兜底：模型生成的 Markdown 表格会自动转换为 Discord 可读的项目符号。
 - 安全链接总结：限制网页大小、请求时间和重定向次数；B站完整 BV 链接由隔离的 Info Curator sidecar 生成带时间引用的完整总结。Discord 展示层隐藏仅供审计的 `引用/seg-*` 行，并将剩余长内容无截断地拆成多个编号 embed。
 - 免费健康检查：`/health` 和脚本检查不调用模型生成，不消耗 LLM token。
@@ -26,12 +27,13 @@
 │   ├── settings.py           # 普通设置与本地密钥分离
 │   ├── news_cache.py         # 高级新闻去重与缓存
 │   ├── weather.py            # wttr.in + Open-Meteo 异步天气与 Embed 生成
+│   ├── gaming.py             # Epic 喜加一与 CheapShark/Steam 折扣异步抓取
 │   ├── info_curator_client.py # 内部视频总结 sidecar 严格客户端
 │   ├── discord_video_presenter.py # B站总结的 Discord 专用精简与分段
 │   ├── video_summary_worker.py # 进程隔离的 Info Curator CLI 网关
 │   ├── web_fetcher.py        # 安全、限量的指定网页抓取
 │   └── web_search.py         # Google News/Wikipedia 检索与来源格式化
-├── cogs/                     # Discord 命令与定时业务 (含 weather, news, reading 等)
+├── cogs/                     # Discord 命令与定时业务 (含 weather, news, gaming, reading 等)
 ├── scripts/
 │   ├── healthcheck.py        # 零 token 配置/在线健康检查
 │   └── validate.py           # 编译、可选本地测试、健康检查总入口

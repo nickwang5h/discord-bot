@@ -75,6 +75,13 @@ class SettingsCog(commands.Cog):
         formatted = ", ".join(city_list)
         await interaction.followup.send(f"✅ 已将每日天气播报城市更新为：`{formatted}`", ephemeral=True)
 
+    @app_commands.command(name="set_gaming_channel", description="[管理员] 设置游戏特惠与 Epic 喜加一推送的频道")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_gaming_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        settings.set_setting("GAMING_CHANNEL_ID", str(channel.id))
+        await interaction.followup.send(f"✅ 已将游戏特惠推送频道设置为 {channel.mention}", ephemeral=True)
+
     @app_commands.command(name="settings", description="[管理员] 查看当前机器人各项运行配置")
     @app_commands.checks.has_permissions(administrator=True)
     async def view_settings(self, interaction: discord.Interaction):
@@ -99,6 +106,13 @@ class SettingsCog(commands.Cog):
         else:
             weather_val = f"{format_channel('NEWS_CHANNEL_ID')} *(继承新闻)*"
 
+        gaming_cid = current.get("GAMING_CHANNEL_ID")
+        if gaming_cid:
+            gch = self.bot.get_channel(int(gaming_cid))
+            gaming_val = gch.mention if gch else f"`{gaming_cid}`"
+        else:
+            gaming_val = f"{format_channel('NEWS_CHANNEL_ID')} *(继承新闻)*"
+
         embed = discord.Embed(
             title="⚙️ 机器人当前运行配置",
             color=discord.Color.blue(),
@@ -109,7 +123,8 @@ class SettingsCog(commands.Cog):
                 f"- **综合新闻**: {format_channel('NEWS_CHANNEL_ID')}\n"
                 f"- **高级精读**: {format_channel('TEST_NEWS_CHANNEL_ID')}\n"
                 f"- **每日阅读**: {format_channel('READING_CHANNEL_ID')}\n"
-                f"- **天气预报**: {weather_val}"
+                f"- **天气预报**: {weather_val}\n"
+                f"- **游戏特惠**: {gaming_val}"
             ),
             inline=False,
         )

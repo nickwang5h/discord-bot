@@ -32,6 +32,8 @@ class Health(commands.Cog):
             ("高级精读", "AdvancedNews", "scheduled_digest"),
             ("每日阅读", "DailyReading", "reading_loop"),
             ("天气预报", "Weather", "weather_daily"),
+            ("Epic 喜加一", "Gaming", "epic_weekly"),
+            ("Steam 折扣监控", "Gaming", "steam_daily"),
         ]
         task_lines = []
         for label, cog_name, attr_name in task_specs:
@@ -53,6 +55,7 @@ class Health(commands.Cog):
             f"- 高级新闻频道: {'✅' if settings.get_setting('TEST_NEWS_CHANNEL_ID') else '➖'}",
             f"- 阅读频道: {'✅' if settings.get_setting('READING_CHANNEL_ID') else '➖'}",
             f"- 天气频道: {'✅' if settings.get_setting('WEATHER_CHANNEL_ID') else '➖'}",
+            f"- 游戏特惠频道: {'✅' if settings.get_setting('GAMING_CHANNEL_ID') else '➖'}",
         ]
 
         embed = discord.Embed(

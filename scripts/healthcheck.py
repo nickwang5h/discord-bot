@@ -82,6 +82,13 @@ def run_offline_checks(report: Report, *, strict: bool) -> None:
         else:
             report.error(f"{key} 必须是 Discord channel ID")
 
+    gaming_cid = settings.get_setting("GAMING_CHANNEL_ID")
+    if gaming_cid is not None:
+        if str(gaming_cid).isdigit():
+            report.ok("GAMING_CHANNEL_ID 格式正确")
+        else:
+            report.error("GAMING_CHANNEL_ID 必须是 Discord channel ID")
+
     try:
         json.loads(settings.SETTINGS_FILE.read_text(encoding="utf-8"))
         report.ok("settings.json 是有效 JSON")
