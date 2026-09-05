@@ -97,7 +97,8 @@ Groq、智谱和 OpenRouter 都使用 OpenAI-compatible Chat Completions 协议�
 
 ```text
 普通生成（use_search=False）
-  Groq: qwen/qwen3.6-27b
+  Groq: qwen/qwen3.8-27b
+        → qwen/qwen3.6-27b
         → openai/gpt-oss-120b
         → openai/gpt-oss-20b
          ↓

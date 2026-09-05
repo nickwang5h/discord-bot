@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_MODELS = [
     ModelSpec(
+        "qwen/qwen3.8-27b",
+        reasoning_effort="none",
+        reasoning_format="hidden",
+    ),
+    ModelSpec(
         "qwen/qwen3.6-27b",
         reasoning_effort="none",
         reasoning_format="hidden",

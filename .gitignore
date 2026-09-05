@@ -1,7 +1,6 @@
 # Environments
 .env
 .env.*
-INSTALL.md
 
 
 # Byte-compiled / optimized / DLL files

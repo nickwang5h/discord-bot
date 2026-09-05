@@ -73,15 +73,17 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
         ai_client.gemini_cooldown_until = 0.0
 
     def test_qwen_requests_disable_reasoning_output(self):
-        qwen = next(spec for spec in ai_client.GROQ_MODELS if spec.model_id == "qwen/qwen3.6-27b")
-
-        self.assertEqual(qwen.reasoning_effort, "none")
-        self.assertEqual(qwen.reasoning_format, "hidden")
+        for model_id in ("qwen/qwen3.8-27b", "qwen/qwen3.6-27b"):
+            with self.subTest(model=model_id):
+                qwen = next(spec for spec in ai_client.GROQ_MODELS if spec.model_id == model_id)
+                self.assertEqual(qwen.reasoning_effort, "none")
+                self.assertEqual(qwen.reasoning_format, "hidden")
 
     def test_model_catalog_balances_quality_cost_and_retirement_risk(self):
         self.assertEqual(
             [spec.model_id for spec in ai_client.GROQ_MODELS],
             [
+                "qwen/qwen3.8-27b",
                 "qwen/qwen3.6-27b",
                 "openai/gpt-oss-120b",
                 "openai/gpt-oss-20b",
@@ -89,7 +91,7 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [spec.reasoning_effort for spec in ai_client.GROQ_MODELS],
-            ["none", "low", "low"],
+            ["none", "none", "low", "low"],
         )
         self.assertEqual(
             [spec.model_id for spec in ai_client.ZHIPU_MODELS],
