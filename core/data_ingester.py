@@ -16,10 +16,12 @@ SOURCES = [
 
 def _as_dict(item) -> dict:
     return {
-        "title": item.title,
+        "title": item.title[:300],
         "url": item.url,
-        "content": item.summary,
+        "content": item.summary[:4000],
         "source": item.category,
+        "publisher": item.source_name,
+        "published_at": item.published_at,
     }
 
 
@@ -33,13 +35,6 @@ async def fetch_rss(url: str, category: str, max_age_seconds: int = 86400, max_i
     return [_as_dict(item) for item in items]
 
 
-async def fetch_obsidian_notes() -> list[dict]:
-    """Placeholder for future local-note ingestion."""
-    return []
-
-
 async def fetch_all_sources() -> list[dict]:
-    items = await fetch_feeds(SOURCES, max_age_seconds=86400, max_items_per_source=4)
-    result = [_as_dict(item) for item in items]
-    result.extend(await fetch_obsidian_notes())
-    return result
+    items = await fetch_feeds(SOURCES, max_age_seconds=3 * 86400, max_items_per_source=4)
+    return [_as_dict(item) for item in items]

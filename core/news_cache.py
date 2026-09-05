@@ -7,16 +7,6 @@ from core.storage import JsonStore
 CACHE_FILE = STATE_ROOT / "data" / "news_cache.json"
 MAX_CACHE_SIZE = 150
 _cache_store = JsonStore(CACHE_FILE, list)
-CURRENT_SCORE_FIELDS = frozenset(
-    {
-        "relevance_score",
-        "novelty_score",
-        "quality_score",
-        "llm_interestingness",
-        "cross_domain_bridge",
-        "discovery_score",
-    }
-)
 
 
 def load_cache() -> list[dict[str, Any]]:
@@ -26,31 +16,6 @@ def load_cache() -> list[dict[str, Any]]:
 
 def save_cache(data: list[dict[str, Any]]) -> None:
     _cache_store.write(data)
-
-
-def _is_current_item(item: object) -> bool:
-    if not isinstance(item, dict) or not item.get("title") or not item.get("url"):
-        return False
-    if not CURRENT_SCORE_FIELDS.issubset(item):
-        return False
-    try:
-        return all(0.0 <= float(item[field]) <= 1.0 for field in CURRENT_SCORE_FIELDS)
-    except (TypeError, ValueError):
-        return False
-
-
-def prune_legacy_items() -> int:
-    """Remove cache entries that cannot participate in the current scoring flow."""
-    removed = 0
-
-    def update(cache: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        nonlocal removed
-        current = [item for item in cache if _is_current_item(item)]
-        removed = len(cache) - len(current)
-        return current
-
-    _cache_store.update(update)
-    return removed
 
 
 def add_items(new_items: list[dict[str, Any]]) -> int:
@@ -66,7 +31,14 @@ def add_items(new_items: list[dict[str, Any]]) -> int:
             item = dict(source_item)
             url = item.get("url")
             title = item.get("title")
-            if (url and url in existing_urls) or (title and title in existing_titles):
+            if url and url in existing_urls:
+                previous = next(entry for entry in cache if entry.get("url") == url)
+                # Backfill raw evidence on re-fetch, preserving delivery identity and old fields.
+                if not previous.get("pushed") and "content" not in previous and "content" in item:
+                    previous.update(item)
+                    previous["timestamp"] = time.time()
+                continue
+            if title and title in existing_titles:
                 continue
             item["timestamp"] = time.time()
             cache.append(item)

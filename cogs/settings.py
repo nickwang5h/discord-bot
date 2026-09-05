@@ -34,12 +34,12 @@ class SettingsCog(commands.Cog):
         settings.set_setting("NEWS_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将新闻推送频道设置为 {channel.mention}", ephemeral=True)
 
-    @app_commands.command(name="set_test_news_channel", description="[管理员] 设置高级新闻 (Test News) 推送的频道")
+    @app_commands.command(name="set_test_news_channel", description="[管理员] 设置视野拾遗推送的频道")
     @app_commands.checks.has_permissions(administrator=True)
     async def set_test_news_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("TEST_NEWS_CHANNEL_ID", str(channel.id))
-        await interaction.followup.send(f"✅ 已将高级新闻推送频道设置为 {channel.mention}", ephemeral=True)
+        await interaction.followup.send(f"✅ 已将视野拾遗推送频道设置为 {channel.mention}", ephemeral=True)
 
     @app_commands.command(name="set_model", description="[管理员] 设置全局 AI 模型 (例如 gemini-3.5-flash)")
     @app_commands.checks.has_permissions(administrator=True)
@@ -121,7 +121,7 @@ class SettingsCog(commands.Cog):
             name="📢 频道绑定",
             value=(
                 f"- **综合新闻**: {format_channel('NEWS_CHANNEL_ID')}\n"
-                f"- **高级精读**: {format_channel('TEST_NEWS_CHANNEL_ID')}\n"
+                f"- **视野拾遗**: {format_channel('TEST_NEWS_CHANNEL_ID')}\n"
                 f"- **每日阅读**: {format_channel('READING_CHANNEL_ID')}\n"
                 f"- **天气预报**: {weather_val}\n"
                 f"- **游戏特惠**: {gaming_val}"

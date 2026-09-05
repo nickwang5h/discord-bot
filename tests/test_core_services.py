@@ -135,32 +135,21 @@ class JsonStoreTests(unittest.TestCase):
                 self.assertEqual(news_cache.filter_new_items([item]), [])
                 self.assertTrue(news_cache.load_cache()[0]["pushed"])
 
-    def test_news_cache_prunes_legacy_schema(self):
+    def test_news_cache_backfills_evidence_without_resetting_delivered_items(self):
         with tempfile.TemporaryDirectory() as directory:
             cache_store = JsonStore(Path(directory) / "news.json", list)
-            current = {
-                "title": "Current",
-                "url": "https://example.com/current",
-                "relevance_score": 0.8,
-                "novelty_score": 0.7,
-                "quality_score": 0.9,
-                "llm_interestingness": 0.6,
-                "cross_domain_bridge": 0.5,
-                "discovery_score": 0.72,
-            }
-            legacy = {
-                "title": "Legacy",
-                "url": "https://example.com/legacy",
-                "theme_score": 8,
-                "serendipity_score": 7,
-            }
-            cache_store.write([legacy, current])
-
+            legacy = {"title": "Legacy", "url": "https://example.com/legacy", "summary": "Model text"}
+            delivered = {"title": "Read", "url": "https://example.com/read", "pushed": True}
+            cache_store.write([legacy, delivered])
             with patch.object(news_cache, "_cache_store", cache_store):
-                removed = news_cache.prune_legacy_items()
-
-                self.assertEqual(removed, 1)
-                self.assertEqual(news_cache.load_cache(), [current])
+                news_cache.add_items([
+                    {**legacy, "content": "Original RSS evidence", "publisher": "Publisher"},
+                    {"title": "Read", "url": delivered["url"], "content": "New RSS evidence"},
+                ])
+                by_url = {item["url"]: item for item in news_cache.load_cache()}
+                self.assertEqual(by_url[legacy["url"]]["content"], "Original RSS evidence")
+                self.assertEqual(by_url[delivered["url"]], delivered)
+                self.assertEqual(by_url[legacy["url"]]["summary"], "Model text")
 
 
 class FeedParsingTests(unittest.TestCase):
