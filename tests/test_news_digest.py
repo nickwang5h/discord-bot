@@ -53,7 +53,7 @@ def model_payload(*ids: str) -> str:
             "items": [
                 {
                     "id": candidate_id,
-                    "lane": "core" if index % 2 else "breadth",
+                    "title": f"中文新闻标题 {index}",
                     "summary": f"依据 RSS 的摘要 {index}",
                 }
                 for index, candidate_id in enumerate(ids, start=1)
@@ -106,12 +106,13 @@ class NewsDigestContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(generate.await_args.kwargs["json_mode"])
         self.assertEqual(generate.await_args.kwargs["max_output_tokens"], 3000)
 
-        self.assertEqual(len(embeds), 2)
+        self.assertEqual(len(embeds), 3)
         rendered = "\n".join(embed.description or "" for embed in embeds)
         self.assertEqual(rendered.count("]("), 4)
         for item in selected:
             self.assertIn(str(item["url"]), rendered)
-            self.assertIn(str(item["title"]), rendered)
+            self.assertIn(str(item["digest_title"]), rendered)
+            self.assertNotIn(str(item["title"]), rendered)
         self.assertLessEqual(
             sum(_embed_character_count(embed) for embed in embeds),
             MAX_MESSAGE_EMBED_CHARS,
@@ -142,10 +143,10 @@ class NewsDigestContractTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "摘要无效"):
             _normalize_selection(json.dumps(linked), candidates)
 
-        wrong_lane = json.loads(model_payload("N01"))
-        wrong_lane["items"][0]["lane"] = "finance"
-        with self.assertRaisesRegex(ValueError, "条目结构无效"):
-            _normalize_selection(json.dumps(wrong_lane), candidates)
+        wrong_title = json.loads(model_payload("N01"))
+        wrong_title["items"][0]["title"] = "English only"
+        with self.assertRaisesRegex(ValueError, "中文标题无效"):
+            _normalize_selection(json.dumps(wrong_title), candidates)
 
         oversized = _build_candidates(
             [
@@ -256,6 +257,13 @@ class NewsDigestContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_filter_unchanged_candidates([original], history), [])
         self.assertEqual(_filter_unchanged_candidates([updated], history), [updated])
 
+    def test_headline_rewrite_alone_is_not_a_news_update(self) -> None:
+        original = _build_candidates(feed_items()[:1])[0]
+        changed = {**original, "title": "Reworded headline", "evidence_hash": "changed"}
+        self.assertEqual(_filter_unchanged_candidates([changed], [original]), [])
+        changed["rss_summary"] = "  RSS EVIDENCE 1  "
+        self.assertEqual(_filter_unchanged_candidates([changed], [original]), [])
+
     def test_delivery_history_expires_automatically(self) -> None:
         now = time.time()
         candidate = _build_candidates(feed_items())[0]
@@ -275,7 +283,7 @@ class NewsDigestContractTests(unittest.IsolatedAsyncioTestCase):
         cog._delivery_lock = asyncio.Lock()
         candidate = {
             **_build_candidates(feed_items())[0],
-            "lane": "core",
+            "digest_title": "中文标题",
             "digest_summary": "测试摘要",
         }
         embed = MagicMock()
@@ -300,7 +308,7 @@ class NewsDigestContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduled_history_is_written_only_after_successful_send(self) -> None:
         candidate = {
             **_build_candidates(feed_items())[0],
-            "lane": "core",
+            "digest_title": "中文标题",
             "digest_summary": "正式摘要",
         }
         embed = MagicMock()
