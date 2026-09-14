@@ -6,10 +6,10 @@ Discord Bot owns user interaction, bounded job delivery, and result presentation
 does not become the media or semantic-processing worker. Work directly in this
 repository; an ordinary project-local request does not need a Personal Ops task first.
 
-Follow the global L0/L1/L2 execution policy. Ordinary work starts and ends in this repository;
+Follow the global action-scope policy. Ordinary work starts and ends in this repository;
 do not create an `ops-report`, receipt, reconciliation update, or Personal Ops task. A named public
 provider/live check authorizes that bounded check. Private runtime access, deployment, credentials,
-destructive data work, and service changes remain L2.
+destructive data work, and service changes require explicit matching scope.
 
 ## Start here
 
@@ -58,20 +58,20 @@ destructive data work, and service changes remain L2.
   overwrite settings/cache files.
 - A direct implementation request authorizes routine personal commit/push, and a named public live
   check authorizes that bounded check. Diverged-history merge, deployment, private runtime access,
-  and service changes remain L2.
+  and service changes require explicit matching scope.
 
 ## Change rules
 
-- Trace the full entry-to-side-effect path before editing and fix the root cause.
+- For runtime behavior changes, trace the affected entry-to-side-effect path and fix the root cause.
 - Keep changes scoped and modular; prefer existing abstractions.
-- Add the closest regression test when behavior changes. Tests must not write real
+- Add a regression test when needed to protect the changed behavior. Tests must not write real
   `data/`, call paid models, or depend on deployment secrets.
 - Update `arch.md` when structure, dependencies, data flow, provider/fallback order,
   retry/delivery semantics, quotas, configuration, security boundaries, or
   operational workflows change.
-- External model IDs, API behavior, limits, prices, or live source availability
-  require `.agents/skills/verify-realtime-data/SKILL.md` and an explicitly authorized
-  bounded live check.
+- Use `.agents/skills/verify-realtime-data/SKILL.md` when changing external facts affect the task.
+  Public official documentation/catalog lookups are ordinary read-only research; authenticated
+  provider probes, paid calls, and live delivery retain their specific authorization boundaries.
 
 ## Verification
 
