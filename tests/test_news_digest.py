@@ -80,7 +80,7 @@ class NewsDigestContractTests(unittest.IsolatedAsyncioTestCase):
                 "_history_store",
                 JsonStore(Path(directory) / "history.json", list),
             ),
-            patch.object(news_digest, "fetch_feeds", AsyncMock(return_value=items)),
+            patch.object(news_digest, "fetch_feeds", AsyncMock(return_value=items)) as fetch,
             patch.object(news_digest.ai_client, "generate_ai", generate),
         ):
             payload = await cog._build_news_digest(
@@ -93,6 +93,18 @@ class NewsDigestContractTests(unittest.IsolatedAsyncioTestCase):
         embeds, selected = payload
         model_input = json.loads(generate.await_args.args[0])
         self.assertEqual(len(selected), 4)
+        sources = fetch.await_args.args[0]
+        self.assertEqual(
+            {source.name for source in sources if source.category == "World"},
+            {"BBC World", "NPR World", "Al Jazeera"},
+        )
+        self.assertEqual(
+            {source.name for source in sources if source.category == "Tech"},
+            {"Ars Technica", "TechCrunch"},
+        )
+        self.assertLessEqual(len(sources) * fetch.await_args.kwargs["max_items_per_source"], 40)
+        self.assertEqual(model_input["max_items_per_publisher"], 3)
+        self.assertIn("不把指控写成定论", generate.await_args.kwargs["system"])
         self.assertIn("render_cost_budget", model_input)
         self.assertIn("render_cost", model_input["candidates"][0])
         self.assertEqual(model_input["candidates"][0]["publisher"], "BBC World")
@@ -166,6 +178,34 @@ class NewsDigestContractTests(unittest.IsolatedAsyncioTestCase):
                 model_payload(*(str(item["id"]) for item in oversized)),
                 oversized,
             )
+
+    def test_publisher_cap_keeps_other_sources_and_validates_dropped_items(self) -> None:
+        items = [
+            FeedItem(
+                category="World" if index < 4 else "Tech",
+                source_name="BBC World" if index < 4 else "Ars Technica",
+                title=f"Story {index}",
+                url=f"https://example.com/diverse-{index}",
+                summary="Evidence",
+                published_at=None,
+            )
+            for index in range(5)
+        ]
+        candidates = _build_candidates(items)
+        bbc = [str(item["id"]) for item in candidates if item["publisher"] == "BBC World"]
+        tech = next(str(item["id"]) for item in candidates if item["category"] == "Tech")
+        selected = _normalize_selection(model_payload(*bbc, tech), candidates)
+        self.assertEqual([item["id"] for item in selected], bbc[:3] + [tech])
+        embeds = news_digest._build_digest_embeds("早间新闻", selected, "test")
+        self.assertEqual(len(embeds), 2)
+        self.assertIn("科技与 AI", embeds[1].title)
+        self.assertIn("Ars Technica", embeds[1].description)
+        with self.assertRaisesRegex(ValueError, "未知或重复"):
+            _normalize_selection(model_payload(*bbc, bbc[-1]), candidates)
+        invalid = json.loads(model_payload(*bbc))
+        invalid["items"][-1]["summary"] = "https://forged.example/"
+        with self.assertRaisesRegex(ValueError, "摘要无效"):
+            _normalize_selection(json.dumps(invalid), candidates)
 
     def test_candidate_url_cannot_break_markdown_link(self) -> None:
         item = feed_items()[0]
