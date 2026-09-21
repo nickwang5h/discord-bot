@@ -25,7 +25,7 @@
 │   ├── jobs.py               # 重试、single-flight、单次发送事务
 │   ├── storage.py            # 原子 JSON 存储
 │   ├── settings.py           # 普通设置与本地密钥分离
-│   ├── news_cache.py         # 高级新闻去重与缓存
+│   ├── news/                 # 共享素材、独立专题、订阅与SQLite投递状态
 │   ├── weather.py            # wttr.in + Open-Meteo 异步天气与 Embed 生成
 │   ├── gaming.py             # Epic 喜加一与 CheapShark/Steam 折扣异步抓取
 │   ├── info_curator_client.py # 内部视频总结 sidecar 严格客户端
@@ -98,7 +98,7 @@ python bot.py
   继续通过独立 `/srv/discord-bot/runtime/runtime.env` 的 Compose `env_file`
   注入，不复制进镜像。
 - `data/secrets.json`：通过 `/set_gemini_key` 保存的本地密钥，已被 Git 忽略。
-- `BOT_STATE_DIR`：可选的绝对路径；设置后，`settings.json`、`data/secrets.json`、`data/news_cache.json` 和 `data/news_digest_history.json` 全部从该目录读写，使部署代码和持久状态分离。
+- `BOT_STATE_DIR`：可选的绝对路径；设置后，`settings.json`、`data/secrets.json` 和 `data/news.sqlite3` 等运行状态从该目录读写，使部署代码和持久状态分离。旧新闻 JSON 仅供显式迁移，不再由运行入口读写。
 - `BOT_ENABLE_SCHEDULED_JOBS`：是否启动日报、阅读和高级资讯循环；关闭后管理员手动测试命令仍可使用。
 - `BOT_CONTACT_EMAIL`：Wikimedia 要求的机器人联系方式，只随 Wikipedia API 请求发送；日志和健康检查不会显示其值。
 - `INFO_CURATOR_SERVICE_URL`：固定内部 sidecar 地址；只允许 Compose 服务名或 loopback，禁止跳转和任意目标。
@@ -117,13 +117,19 @@ python bot.py
 | 视野拾遗早刊 | 08:00 |
 | AI/HN 日报 | 08:15 |
 | 综合新闻早报 | 08:45 |
+| 强电动态（默认美加） | 12:00 |
 | 综合新闻午报 | 15:30 |
 | 视野拾遗晚刊 | 18:00 |
-| 探索素材抓取 | 每小时 |
+| 共享新闻素材抓取 | 每小时 |
 
 “视野拾遗”推荐熟悉话题之外、普通读者能理解且有具体内容支撑的原文。每小时只收集 RSS，
 早晚出刊时做一次有界选编，最多 5 条且不凑数；每条包含中文标题、原文内容概述、具体阅读价值
 和真实来源。材料仅为 RSS 摘要，因此不冒充全文精读，也不强行关联科技或金融。
+
+新闻统一由 `cogs/news.py` 触发，频道、专题与订阅配置相互独立。新增 `/news_preview`、
+`/news_status`、`/news_publish`，保留旧新闻测试命令。强电动态区分规划、采购、授标及政策，
+不做存量买家搜索。**正式发送前必须显式初始化／迁移旧投递历史**；发送结果不确定时暂停
+该订阅并要求人工核查，不盲目重发。配置、切换与恢复步骤见 [新闻操作说明](docs/news.md)。
 
 ## 自动检查
 

@@ -7,15 +7,12 @@ from unittest.mock import patch
 import discord
 from discord.ext import commands
 
-from config import PROJECT_ROOT
-from core import news_cache
-from core.storage import JsonStore
-from cogs.advanced_news import AdvancedNews
 from cogs.ai_daily import AIDaily
 from cogs.daily_reading import DailyReading
 from cogs.help import _build_help_embed
-from cogs.news_digest import NewsDigest
+from cogs.news import News
 from cogs.weather import Weather
+from config import PROJECT_ROOT
 
 
 class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
@@ -33,15 +30,14 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with tempfile.TemporaryDirectory() as directory:
-            cache_store = JsonStore(Path(directory) / "news.json", list)
-            with patch.object(news_cache, "_cache_store", cache_store):
+            with patch('cogs.news.STATE_ROOT', Path(directory)):
                 try:
                     for extension in extensions:
                         await bot.load_extension(extension)
                     self.assertEqual(set(bot.extensions), set(extensions))
 
                     embed = _build_help_embed(bot.tree.get_commands())
-                    rendered = "\n".join(field.value for field in embed.fields)
+                    rendered = "\n".join(field.value or '' for field in embed.fields)
                     for command in bot.tree.get_commands():
                         self.assertIn(f"`/{command.name}`", rendered)
                 finally:
@@ -53,24 +49,21 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
 
         with tempfile.TemporaryDirectory() as directory:
-            cache_store = JsonStore(Path(directory) / "news.json", list)
             with (
-                patch.object(news_cache, "_cache_store", cache_store),
-                patch.dict(AdvancedNews.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
+                patch('cogs.news.STATE_ROOT', Path(directory)),
+                patch.dict(News.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(AIDaily.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(DailyReading.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
-                patch.dict(NewsDigest.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(Weather.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
             ):
-                cogs = [AdvancedNews(bot), AIDaily(bot), DailyReading(bot), NewsDigest(bot), Weather(bot)]
+                cogs = [News(bot), AIDaily(bot), DailyReading(bot), Weather(bot)]
                 try:
                     loop_specs = (
                         (cogs[0], "hourly_fetch"),
-                        (cogs[0], "scheduled_digest"),
+                        (cogs[0], "dispatch"),
                         (cogs[1], "ai_news_daily"),
                         (cogs[2], "reading_loop"),
-                        (cogs[3], "daily"),
-                        (cogs[4], "weather_daily"),
+                        (cogs[3], "weather_daily"),
                     )
                     for cog, loop_name in loop_specs:
                         self.assertFalse(getattr(cog, loop_name).is_running(), loop_name)
@@ -85,7 +78,8 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                         <= command_names
                     )
                 finally:
-                    for cog in cogs:
+                    await cogs[0].cog_unload()
+                    for cog in cogs[1:]:
                         cog.cog_unload()
                     await bot.close()
 
@@ -105,7 +99,7 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        fields = {field.name: field.value for field in embed.fields}
+        fields = {field.name: field.value or '' for field in embed.fields}
         self.assertIn("`/ask`", fields["常用命令"])
         self.assertIn("`/debug`", fields["开发工具"])
         self.assertIn("`/health`", fields["管理员命令"])

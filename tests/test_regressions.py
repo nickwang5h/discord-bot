@@ -4,7 +4,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from cogs.advanced_news import AdvancedNews
 from cogs.ai_daily import AIDaily
 from cogs.ask import (
     ASK_MODE_GEMINI_SEARCH,
@@ -605,19 +604,6 @@ class BilibiliSummaryTests(unittest.IsolatedAsyncioTestCase):
         worker.assert_awaited_once_with("https://www.bilibili.com/video/BV1234567890")
 
 
-class AdvancedNewsAnalysisTests(unittest.IsolatedAsyncioTestCase):
-    async def test_interval_loop_skips_immediate_startup_fetch(self):
-        cog = object.__new__(AdvancedNews)
-        cog._skip_initial_hourly_fetch = True
-        cog._process_hourly_fetch = AsyncMock()
-
-        await AdvancedNews.hourly_fetch.coro(cog)
-        cog._process_hourly_fetch.assert_not_awaited()
-
-        await AdvancedNews.hourly_fetch.coro(cog)
-        cog._process_hourly_fetch.assert_awaited_once()
-
-
 class DigestDeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_generation_retry_still_sends_only_once(self):
         cog = object.__new__(AIDaily)
@@ -666,25 +652,6 @@ class DigestDeliveryTests(unittest.IsolatedAsyncioTestCase):
         cog._build_daily_embed.assert_awaited_once()
         channel.send.assert_awaited_once_with(embed=embed)
 
-    async def test_cache_failure_after_send_does_not_retry_delivery(self):
-        cog = object.__new__(AdvancedNews)
-        cog._digest_delivery_lock = asyncio.Lock()
-        embed = create_ai_embed("精读", "- item")
-        cog._build_scheduled_digest = AsyncMock(return_value=(embed, ["https://example.com"]))
-        channel = SimpleNamespace(send=AsyncMock())
-
-        async def no_wait_retry(_task_name, build, **_kwargs):
-            return await build()
-
-        with (
-            patch("core.jobs.retry_async", side_effect=no_wait_retry),
-            patch("cogs.advanced_news.news_cache.mark_as_pushed", side_effect=RuntimeError("disk error")),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "disk error"):
-                await cog._run_scheduled_digest(channel, "测试")
-
-        cog._build_scheduled_digest.assert_awaited_once()
-        channel.send.assert_awaited_once_with(embed=embed)
 
 
 if __name__ == "__main__":

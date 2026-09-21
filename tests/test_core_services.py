@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from config import PROJECT_ROOT, _parse_bool, _parse_bounded_float, _resolve_state_root
-from core import news_cache, settings
+from core import settings
 from core.ai_providers import (
     AIResult,
     ModelSpec,
@@ -110,46 +110,6 @@ class JsonStoreTests(unittest.TestCase):
             ):
                 self.assertIsNone(settings.get_secret("GROQ_API_KEY"))
 
-    def test_news_cache_deduplicates_one_input_batch(self):
-        with tempfile.TemporaryDirectory() as directory:
-            cache_store = JsonStore(Path(directory) / "news.json", list)
-            items = [
-                {"title": "Same", "url": "https://example.com/1"},
-                {"title": "Same", "url": "https://example.com/2"},
-            ]
-            with patch.object(news_cache, "_cache_store", cache_store):
-                added = news_cache.add_items(items)
-
-                self.assertEqual(added, 1)
-                self.assertEqual(len(news_cache.load_cache()), 1)
-
-    def test_news_cache_retains_delivered_identity_for_future_fetches(self):
-        with tempfile.TemporaryDirectory() as directory:
-            cache_store = JsonStore(Path(directory) / "news.json", list)
-            item = {"title": "Delivered", "url": "https://example.com/delivered"}
-            with patch.object(news_cache, "_cache_store", cache_store):
-                news_cache.add_items([item])
-                news_cache.mark_as_pushed([item["url"]])
-
-                self.assertEqual(news_cache.get_unpushed_items(), [])
-                self.assertEqual(news_cache.filter_new_items([item]), [])
-                self.assertTrue(news_cache.load_cache()[0]["pushed"])
-
-    def test_news_cache_backfills_evidence_without_resetting_delivered_items(self):
-        with tempfile.TemporaryDirectory() as directory:
-            cache_store = JsonStore(Path(directory) / "news.json", list)
-            legacy = {"title": "Legacy", "url": "https://example.com/legacy", "summary": "Model text"}
-            delivered = {"title": "Read", "url": "https://example.com/read", "pushed": True}
-            cache_store.write([legacy, delivered])
-            with patch.object(news_cache, "_cache_store", cache_store):
-                news_cache.add_items([
-                    {**legacy, "content": "Original RSS evidence", "publisher": "Publisher"},
-                    {"title": "Read", "url": delivered["url"], "content": "New RSS evidence"},
-                ])
-                by_url = {item["url"]: item for item in news_cache.load_cache()}
-                self.assertEqual(by_url[legacy["url"]]["content"], "Original RSS evidence")
-                self.assertEqual(by_url[delivered["url"]], delivered)
-                self.assertEqual(by_url[legacy["url"]]["summary"], "Model text")
 
 
 class FeedParsingTests(unittest.TestCase):

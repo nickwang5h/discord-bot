@@ -1,3 +1,5 @@
+from typing import cast
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -21,15 +23,14 @@ class Health(commands.Cog):
             f"- OpenRouter: {'✅' if status['openrouter'] else '➖'}",
             f"- Video sidecar: {'✅ 已配置' if INFO_CURATOR_SERVICE_URL else '➖ 未配置'}",
         ]
-        cooldown = int(status["gemini_cooldown_seconds"])
+        cooldown = int(cast(float, status["gemini_cooldown_seconds"]))
         if cooldown:
             provider_lines.append(f"- Gemini cooldown: ⏳ {cooldown}s")
 
         task_specs = [
             ("AI 日报", "AIDaily", "ai_news_daily"),
-            ("综合新闻", "NewsDigest", "daily"),
-            ("探索素材抓取", "AdvancedNews", "hourly_fetch"),
-            ("视野拾遗", "AdvancedNews", "scheduled_digest"),
+            ("新闻订阅调度", "News", "dispatch"),
+            ("共享新闻素材", "News", "hourly_fetch"),
             ("每日阅读", "DailyReading", "reading_loop"),
             ("天气预报", "Weather", "weather_daily"),
             ("Epic 喜加一", "Gaming", "epic_weekly"),
