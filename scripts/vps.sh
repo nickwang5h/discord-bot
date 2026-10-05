@@ -89,18 +89,21 @@ case "$command" in
         fi
         discord_sha=$(git -C "$local_root" rev-parse HEAD)
         # The sidecar sources live on the VPS. A local sibling checkout pins its
-        # commit; without one the VPS deploys its own origin/main.
-        info_sha=""
-        media_sha=""
-        for pair in "info_sha:$info_local" "media_sha:$media_local"; do
-            path=${pair#*:}
-            [[ -d $path/.git ]] || continue
-            if [[ -n $(git -C "$path" status --porcelain) || $(git -C "$path" branch --show-current) != main ]]; then
-                echo "Local sidecar source $path must be a clean main checkout." >&2
-                exit 1
+        # commit; without one the commit already checked out on the VPS is kept.
+        sidecar_sha() {
+            local local_path=$1 remote_path=$2
+            if [[ -d $local_path/.git ]]; then
+                if [[ -n $(git -C "$local_path" status --porcelain) || $(git -C "$local_path" branch --show-current) != main ]]; then
+                    echo "Local sidecar source $local_path must be a clean main checkout." >&2
+                    return 1
+                fi
+                git -C "$local_path" rev-parse HEAD
+            else
+                ssh "${ssh_options[@]}" "$ssh_target" "$(printf 'git -C %q rev-parse HEAD' "$remote_path")"
             fi
-            printf -v "${pair%%:*}" '%s' "$(git -C "$path" rev-parse HEAD)"
-        done
+        }
+        info_sha=$(sidecar_sha "$info_local" "$info_repo")
+        media_sha=$(sidecar_sha "$media_local" "$media_repo")
         printf -v remote_command \
             'cd %q && DISCORD_BOT_RUNTIME_DIR=%q INFO_CURATOR_REPO=%q MEDIA_TRANSCRIBER_REPO=%q INFO_CURATOR_RUNTIME_DIR=%q MEDIA_TRANSCRIBER_RUNTIME_DIR=%q DISCORD_BOT_EXPECTED_SHA=%q INFO_CURATOR_EXPECTED_SHA=%q MEDIA_TRANSCRIBER_EXPECTED_SHA=%q ./ops/vps/deploy.sh' \
             "$remote_repo" "$runtime_dir" "$info_repo" "$media_repo" "$info_runtime" "$media_runtime" "$discord_sha" "$info_sha" "$media_sha"
