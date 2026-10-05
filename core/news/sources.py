@@ -1,5 +1,16 @@
 """Explicit RSS groups; adding an existing source type is configuration only."""
+from config import get_env
 from core.feeds import FeedSource
+
+
+def _rsshub(path, category, name):
+    """A feed from the private RSSHub instance, present only when the runtime names it."""
+    base, key = get_env('RSSHUB_URL'), get_env('RSSHUB_ACCESS_KEY')
+    if not base or not key or '{uid}' in path and not get_env('BILIBILI_UID'):
+        return ()
+    path = path.format(uid=get_env('BILIBILI_UID'))
+    return (FeedSource(category, f"{base.rstrip('/')}{path}?key={key}", name),)
+
 
 GENERAL = (
     FeedSource('World', 'https://feeds.bbci.co.uk/news/world/rss.xml', 'BBC World'),
@@ -23,6 +34,9 @@ DISCOVERY = (
     FeedSource('Science', 'https://www.nature.com/nature.rss', 'Nature'),
     FeedSource('AI', 'https://openai.com/blog/rss.xml', 'OpenAI'),
 )
+# Appended after the fixed lists so the positional references above stay valid.
+GENERAL += _rsshub('/telegram/channel/cnwallstreet', 'Finance', '华尔街见闻')
+DISCOVERY += _rsshub('/bilibili/followings/video/{uid}', 'Video', 'B站关注')
 GROUPS = {'general': GENERAL, 'discovery': DISCOVERY}
 
 

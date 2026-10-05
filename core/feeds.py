@@ -1,6 +1,7 @@
 import asyncio
 import calendar
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -132,7 +133,9 @@ async def fetch_feeds(
     items: list[FeedItem] = []
     for source, result in zip(sources, results):
         if isinstance(result, BaseException):
-            logger.warning("抓取 RSS 失败 [%s] %s: %s", source.category, source.url, result)
+            # Private feeds carry an access key in the query string.
+            detail = re.sub(r"key=[^&\s'\"]+", "key=***", f"{source.url}: {result}")
+            logger.warning("抓取 RSS 失败 [%s] %s", source.category, detail)
             continue
         items.extend(result)
     return items

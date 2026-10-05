@@ -315,6 +315,20 @@ class MigrationAndConfigurationTests(unittest.TestCase):
         self.assertEqual(len(sources_for(('general',))), 9)
         self.assertEqual(len(GROUPS['discovery']), 10)
 
+    def test_private_rsshub_feeds_exist_only_when_the_runtime_names_them(self):
+        from core.news import sources
+        env = {'RSSHUB_URL': 'https://rss.example/', 'RSSHUB_ACCESS_KEY': 'k', 'BILIBILI_UID': '42'}
+        with patch.object(sources, 'get_env', env.get):
+            (telegram,) = sources._rsshub('/telegram/channel/cnwallstreet', 'Finance', '华尔街见闻')
+            (bilibili,) = sources._rsshub('/bilibili/followings/video/{uid}', 'Video', 'B站关注')
+        self.assertEqual(telegram.url, 'https://rss.example/telegram/channel/cnwallstreet?key=k')
+        self.assertEqual(bilibili.url, 'https://rss.example/bilibili/followings/video/42?key=k')
+        self.assertEqual((telegram.category, bilibili.name), ('Finance', 'B站关注'))
+        for missing in ('RSSHUB_URL', 'RSSHUB_ACCESS_KEY', 'BILIBILI_UID'):
+            partial = {key: value for key, value in env.items() if key != missing}
+            with patch.object(sources, 'get_env', partial.get):
+                self.assertEqual(sources._rsshub('/bilibili/followings/video/{uid}', 'Video', 'B站关注'), ())
+
     def test_bad_subscription_does_not_disable_valid_siblings(self):
         with patch('core.news.subscriptions.settings.load_settings', return_value={'NEWS_SUBSCRIPTIONS': [DEFAULTS[0], {'id': 'bad'}]}):
             subs, errors = load_subscriptions(TOPICS)
