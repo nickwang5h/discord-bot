@@ -34,10 +34,10 @@ DISCOVERY = (
     FeedSource('Science', 'https://www.nature.com/nature.rss', 'Nature'),
     FeedSource('AI', 'https://openai.com/blog/rss.xml', 'OpenAI'),
 )
-# Appended after the fixed lists so the positional references above stay valid.
-GENERAL += _rsshub('/telegram/channel/cnwallstreet', 'Finance', '华尔街见闻')
-DISCOVERY += _rsshub('/bilibili/followings/video/{uid}', 'Video', 'B站关注')
-GROUPS = {'general': GENERAL, 'discovery': DISCOVERY}
+# The owner's own subscriptions. They never join the shared groups above.
+FOLLOWING = (_rsshub('/bilibili/followings/video/{uid}', 'Video', 'B站关注')
+             + _rsshub('/telegram/channel/cnwallstreet', 'Finance', '华尔街见闻'))
+GROUPS = {'general': GENERAL, 'discovery': DISCOVERY, 'following': FOLLOWING}
 
 
 def sources_for(groups):

@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from cogs.inbox import payload_from_message
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from cogs.inbox import SAVE_EMOJI, Inbox, payload_from_message
 from core.inbox import DONE, PENDING, InboxStore, canonical_url, extract_article
 
 PAGE = (
@@ -98,6 +100,19 @@ class PayloadTests(unittest.TestCase):
         payload = payload_from_message(message(bot=True, embeds=[embed("综合新闻", "今日要点", fields=[field])]))
         self.assertIsNone(payload.url)
         self.assertIn("**科技**\n某公司发布新模型", payload.summary)
+
+
+class OwnerOnlyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reactions_from_anyone_but_the_owner_are_ignored(self):
+        bot = MagicMock()
+        bot.is_owner = AsyncMock(side_effect=lambda user: user.id == 1)
+        with tempfile.TemporaryDirectory() as directory, patch("cogs.inbox.STATE_ROOT", Path(directory)):
+            cog = Inbox(bot)
+            await cog.on_raw_reaction_add(SimpleNamespace(emoji=SAVE_EMOJI, user_id=2, channel_id=5, message_id=6))
+            bot.get_channel.assert_not_called()
+            bot.get_channel.return_value = None
+            await cog.on_raw_reaction_add(SimpleNamespace(emoji=SAVE_EMOJI, user_id=1, channel_id=5, message_id=6))
+            bot.get_channel.assert_called_once_with(5)
 
 
 if __name__ == "__main__":

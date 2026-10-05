@@ -72,7 +72,7 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
         ai_client.gemini_cooldown_until = 0.0
 
     def test_qwen_requests_disable_reasoning_output(self):
-        for model_id in ("qwen/qwen3.8-27b", "qwen/qwen3.6-27b"):
+        for model_id in ("qwen/qwen3.8-27b",):
             with self.subTest(model=model_id):
                 qwen = next(spec for spec in ai_client.GROQ_MODELS if spec.model_id == model_id)
                 self.assertEqual(qwen.reasoning_effort, "none")
@@ -83,14 +83,13 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
             [spec.model_id for spec in ai_client.GROQ_MODELS],
             [
                 "qwen/qwen3.8-27b",
-                "qwen/qwen3.6-27b",
                 "openai/gpt-oss-120b",
                 "openai/gpt-oss-20b",
             ],
         )
         self.assertEqual(
             [spec.reasoning_effort for spec in ai_client.GROQ_MODELS],
-            ["none", "none", "low", "low"],
+            ["none", "low", "low"],
         )
         self.assertEqual(
             [spec.model_id for spec in ai_client.ZHIPU_MODELS],
@@ -101,8 +100,7 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
             [
                 "nvidia/nemotron-3-super-120b-a12b:free",
                 "nvidia/nemotron-3-ultra-550b-a55b:free",
-                "openai/gpt-oss-20b:free",
-                "nvidia/nemotron-nano-9b-v2:free",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
             ],
         )
         self.assertFalse(any(spec.model_id.startswith("google/") for spec in ai_client.OPENROUTER_MODELS))

@@ -19,11 +19,6 @@ GROQ_MODELS = [
         reasoning_effort="none",
         reasoning_format="hidden",
     ),
-    ModelSpec(
-        "qwen/qwen3.6-27b",
-        reasoning_effort="none",
-        reasoning_format="hidden",
-    ),
     ModelSpec("openai/gpt-oss-120b", reasoning_effort="low"),
     ModelSpec("openai/gpt-oss-20b", reasoning_effort="low"),
 ]
@@ -34,8 +29,7 @@ ZHIPU_MODELS = [
 OPENROUTER_MODELS = [
     ModelSpec("nvidia/nemotron-3-super-120b-a12b:free"),
     ModelSpec("nvidia/nemotron-3-ultra-550b-a55b:free", supports_json=False),
-    ModelSpec("openai/gpt-oss-20b:free"),
-    ModelSpec("nvidia/nemotron-nano-9b-v2:free"),
+    ModelSpec("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
 ]
 
 client: genai.Client | None = None

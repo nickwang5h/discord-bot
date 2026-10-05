@@ -310,10 +310,13 @@ class MigrationAndConfigurationTests(unittest.TestCase):
         subs = [parse_subscription(raw, TOPICS, channels) for raw in DEFAULTS]
         self.assertEqual(subs[0].times, ('08:45', '15:30'))
         self.assertEqual(subs[1].times, ('08:00', '18:00'))
-        self.assertEqual([s.channel_id for s in subs], [123, 456, 456])
+        self.assertEqual([s.channel_id for s in subs], [123, 456, 456, None])
+        self.assertEqual((subs[3].topic, subs[3].source_groups), ('following', ('following',)))
         self.assertEqual(subs[2].params, {'countries': ['US', 'CA']})
         self.assertEqual(len(sources_for(('general',))), 9)
         self.assertEqual(len(GROUPS['discovery']), 10)
+        shared = {source.name for group in ('general', 'discovery') for source in GROUPS[group]}
+        self.assertFalse(shared & {'B站关注', '华尔街见闻'})
 
     def test_private_rsshub_feeds_exist_only_when_the_runtime_names_them(self):
         from core.news import sources

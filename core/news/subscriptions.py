@@ -13,6 +13,9 @@ DEFAULTS = [
      'times': ['08:00', '18:00'], 'channel_setting': 'TEST_NEWS_CHANNEL_ID'},
     {'id': 'power-us-ca', 'topic': 'power_projects', 'source_groups': ['general', 'discovery'],
      'times': ['12:00'], 'channel_setting': 'TEST_NEWS_CHANNEL_ID', 'params': {'countries': ['US', 'CA']}},
+    # Private: the owner's own feeds, delivered to the owner's inbox channel only.
+    {'id': 'following', 'topic': 'following', 'source_groups': ['following'],
+     'times': ['08:20', '18:20'], 'channel_setting': 'INBOX_CHANNEL_ID'},
 ]
 
 
@@ -42,7 +45,7 @@ def parse_subscription(raw, topics, channels):
             or len(set(times)) != len(times)):
         raise ValueError('每天出刊时间无效')
     channel_key = raw.get('channel_setting')
-    if channel_key is not None and channel_key not in {'NEWS_CHANNEL_ID', 'TEST_NEWS_CHANNEL_ID'}:
+    if channel_key is not None and channel_key not in {'NEWS_CHANNEL_ID', 'TEST_NEWS_CHANNEL_ID', 'INBOX_CHANNEL_ID'}:
         raise ValueError('兼容频道设置名无效')
     channel = raw.get('channel_id', channels.get(channel_key))
     if channel is not None:

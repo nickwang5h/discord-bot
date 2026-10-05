@@ -96,7 +96,6 @@ Groq、智谱和 OpenRouter 都使用 OpenAI-compatible Chat Completions 协议�
 ```text
 普通生成（use_search=False）
   Groq: qwen/qwen3.8-27b
-        → qwen/qwen3.6-27b
         → openai/gpt-oss-120b
         → openai/gpt-oss-20b
          ↓
@@ -151,8 +150,7 @@ OpenRouter 当前内置节点：
 
 1. `nvidia/nemotron-3-super-120b-a12b:free`
 2. `nvidia/nemotron-3-ultra-550b-a55b:free`（仅普通文本）
-3. `openai/gpt-oss-20b:free`
-4. `nvidia/nemotron-nano-9b-v2:free`
+3. `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`
 
 模型目录在 2026-07-30 通过官方 API 实时验证。`scripts/healthcheck.py --live` 会重新验证列表，避免长期依赖文档中的静态状态。OpenRouter 列表不含 Google 节点；JSON mode 会跳过不支持 `response_format` 的 Ultra，然后继续尝试 GPT-OSS 和 Nano。
 

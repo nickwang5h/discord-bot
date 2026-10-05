@@ -65,6 +65,10 @@ class Inbox(commands.Cog):
         self.store = InboxStore(STATE_ROOT / "inbox")
         self._fetch_slots = asyncio.Semaphore(2)
 
+    async def _is_owner(self, user_id: int) -> bool:
+        # The bot also serves shared servers; the inbox belongs to its owner alone.
+        return await self.bot.is_owner(discord.Object(id=user_id))
+
     def _channel_id(self) -> int | None:
         value = settings.get_setting("INBOX_CHANNEL_ID")
         return int(value) if value else None
@@ -111,16 +115,14 @@ class Inbox(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, event: discord.RawReactionActionEvent):
-        if event.user_id == self.bot.user.id:
-            return
         emoji = str(event.emoji)
+        if emoji not in (SAVE_EMOJI, DONE_EMOJI, DROP_EMOJI) or not await self._is_owner(event.user_id):
+            return
         if emoji in (DONE_EMOJI, DROP_EMOJI):
             item = await asyncio.to_thread(self.store.by_card, event.message_id)
             if item:
                 state = DONE if emoji == DONE_EMOJI else DROPPED
                 await asyncio.to_thread(self.store.set_state, item["id"], state)
-            return
-        if emoji != SAVE_EMOJI:
             return
         channel = self.bot.get_channel(event.channel_id)
         if channel is None:
@@ -138,14 +140,18 @@ class Inbox(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or message.channel.id != self._channel_id():
+        if (message.author.bot or message.channel.id != self._channel_id()
+                or not await self._is_owner(message.author.id)):
             return
         payload = payload_from_message(message)
         if payload.url or payload.summary:
             await self._save(payload, origin=message.jump_url, fallback=message.channel)
 
-    @app_commands.command(name="inbox", description="列出收件箱里还没读的条目")
+    @app_commands.command(name="inbox", description="[管理员] 列出收件箱里还没读的条目（仅所有者）")
     async def inbox(self, interaction: discord.Interaction):
+        if not await self._is_owner(interaction.user.id):
+            await interaction.response.send_message("收件箱只对机器人所有者开放。", ephemeral=True)
+            return
         items = await asyncio.to_thread(self.store.pending)
         if not items:
             await interaction.response.send_message("收件箱是空的。", ephemeral=True)
