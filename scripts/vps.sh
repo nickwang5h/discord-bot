@@ -83,15 +83,24 @@ case "$command" in
         local_root=$(git rev-parse --show-toplevel)
         info_local=${INFO_CURATOR_LOCAL_REPO:-$local_root/../info-curator}
         media_local=${MEDIA_TRANSCRIBER_LOCAL_REPO:-$local_root/../media-transcriber}
-        for path in "$local_root" "$info_local" "$media_local"; do
-            if [[ ! -d $path/.git || -n $(git -C "$path" status --porcelain) || $(git -C "$path" branch --show-current) != main ]]; then
-                echo "All three local source repositories must be clean main checkouts." >&2
+        if [[ -n $(git -C "$local_root" status --porcelain) || $(git -C "$local_root" branch --show-current) != main ]]; then
+            echo "The local Discord Bot repository must be a clean main checkout." >&2
+            exit 1
+        fi
+        discord_sha=$(git -C "$local_root" rev-parse HEAD)
+        # The sidecar sources live on the VPS. A local sibling checkout pins its
+        # commit; without one the VPS deploys its own origin/main.
+        info_sha=""
+        media_sha=""
+        for pair in "info_sha:$info_local" "media_sha:$media_local"; do
+            path=${pair#*:}
+            [[ -d $path/.git ]] || continue
+            if [[ -n $(git -C "$path" status --porcelain) || $(git -C "$path" branch --show-current) != main ]]; then
+                echo "Local sidecar source $path must be a clean main checkout." >&2
                 exit 1
             fi
+            printf -v "${pair%%:*}" '%s' "$(git -C "$path" rev-parse HEAD)"
         done
-        discord_sha=$(git -C "$local_root" rev-parse HEAD)
-        info_sha=$(git -C "$info_local" rev-parse HEAD)
-        media_sha=$(git -C "$media_local" rev-parse HEAD)
         printf -v remote_command \
             'cd %q && DISCORD_BOT_RUNTIME_DIR=%q INFO_CURATOR_REPO=%q MEDIA_TRANSCRIBER_REPO=%q INFO_CURATOR_RUNTIME_DIR=%q MEDIA_TRANSCRIBER_RUNTIME_DIR=%q DISCORD_BOT_EXPECTED_SHA=%q INFO_CURATOR_EXPECTED_SHA=%q MEDIA_TRANSCRIBER_EXPECTED_SHA=%q ./ops/vps/deploy.sh' \
             "$remote_repo" "$runtime_dir" "$info_repo" "$media_repo" "$info_runtime" "$media_runtime" "$discord_sha" "$info_sha" "$media_sha"
