@@ -313,8 +313,8 @@ class MigrationAndConfigurationTests(unittest.TestCase):
         self.assertEqual([s.channel_id for s in subs], [123, 456, 456, None])
         self.assertEqual((subs[3].topic, subs[3].source_groups), ('following', ('following',)))
         self.assertEqual(subs[2].params, {'countries': ['US', 'CA']})
-        self.assertEqual(len(sources_for(('general',))), 9)
-        self.assertEqual(len(GROUPS['discovery']), 10)
+        self.assertEqual(len(sources_for(('general',))), 8)
+        self.assertEqual(len(GROUPS['discovery']), 9)
         shared = {source.name for group in ('general', 'discovery') for source in GROUPS[group]}
         self.assertFalse(shared & {'B站关注', '华尔街见闻'})
 
