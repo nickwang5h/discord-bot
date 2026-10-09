@@ -474,6 +474,20 @@ class FeedbackStore:
         rows = sorted(table.values(), key=lambda b: (-b['exposures'], -b['rated'], str(b['name'])))
         return {'since': start, 'totals': totals, 'rows': rows}
 
+    def engaged(self):
+        """What the knowledge index pins: `(canonical_urls, inbox_ids)`.
+
+        URLs of items that were shown (any exposure), have a verdict or were saved;
+        inbox ids of 📥 saves, so a save whose item snapshot is missing still pins
+        through the inbox entry's URL.
+        """
+        with self._lock:
+            urls = {row['canonical_url'] for row in self.db.execute(
+                '''SELECT canonical_url FROM items WHERE key IN
+                   (SELECT key FROM exposures UNION SELECT key FROM feedback UNION SELECT key FROM saves)''')}
+            inbox_ids = {row['inbox_id'] for row in self.db.execute('SELECT inbox_id FROM saves')}
+        return urls, inbox_ids
+
     # ---- retention ------------------------------------------------------------------
 
     def cleanup(self, *, now=None):
