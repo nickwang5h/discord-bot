@@ -18,8 +18,10 @@ MAX_RESULT_CHARS = 24000
 
 
 class NewsPipeline:
-    def __init__(self, store, *, topics=None, limits=None):
+    def __init__(self, store, *, topics=None, limits=None, profile_provider=None):
         self.store = store
+        # `profile_provider(subscription)` -> reader profile or None; personal topics only.
+        self.profile_provider = profile_provider
         self.topics = TOPICS if topics is None else topics
         self.ingester = Ingester(store)
         self.locks = {}
@@ -38,7 +40,12 @@ class NewsPipeline:
         articles = self.store.articles({s.name for s in sources_for(subscription.source_groups)}, age=topic.max_age)
         if not preview:
             articles = [a for a in articles if not self.store.seen(subscription.id, {'url': a.url, '_version': a.version})]
-        prepared = topic.prepare(articles, subscription, history, edition_name(period))
+        personal = getattr(topic, 'personal', False)
+        profile = await self._profile(subscription) if personal else None
+        if personal:
+            prepared = topic.prepare(articles, subscription, history, edition_name(period), profile=profile)
+        else:
+            prepared = topic.prepare(articles, subscription, history, edition_name(period))
         if not prepared.candidates:
             return None
         # Include history and scope: selection is contextual, not a universal article summary.
@@ -57,13 +64,18 @@ class NewsPipeline:
                 if not self.store.reserve_budget(day, subscription.max_output_tokens,
                         max_calls=self.max_calls, max_tokens=self.max_tokens):
                     raise RuntimeError('新闻今日模型预算已用尽')
+                # Personal topics may use Claude; shared topics keep the free chain, call unchanged.
+                routing = {'route': topic.route, 'json_schema': topic.json_schema} if personal else {}
                 async with asyncio.timeout(180):
                     result = await ai_client.generate_ai(raw, system=prepared.system, use_search=False,
-                        json_mode=True, max_output_tokens=subscription.max_output_tokens)
+                        json_mode=True, max_output_tokens=subscription.max_output_tokens, **routing)
                 text, attribution = result.text, result.attribution
         if not isinstance(text, str) or len(text) > MAX_RESULT_CHARS:
             raise ValueError('新闻模型结果超过容量')
-        selected = topic.validate(text, prepared.candidates, subscription, history)
+        if personal:
+            selected = topic.validate(text, prepared.candidates, subscription, history, profile=profile)
+        else:
+            selected = topic.validate(text, prepared.candidates, subscription, history)
         # Rendering also validates the complete message before caching or committing a send intent.
         if selected:
             topic.render(selected, edition_name(period), attribution)
@@ -84,6 +96,15 @@ class NewsPipeline:
         if not 1 <= len(embeds) <= 10 or sum(len(embed) for embed in embeds) > 5800:
             raise ValueError('新闻单次投递超过 Discord 总容量')
         return Edition(embeds, publishable)
+
+    async def _profile(self, subscription):
+        if self.profile_provider is None:
+            return None
+        try:
+            return await asyncio.to_thread(self.profile_provider, subscription)
+        except Exception as error:  # noqa: BLE001 - selection falls back to no profile
+            logger.warning('读者画像读取失败，本次不使用画像 [%s]: %s', subscription.id, error)
+            return None
 
     async def preview(self, subscription, period):
         lock = self.locks.setdefault(subscription.id, asyncio.Lock())

@@ -2,6 +2,7 @@
 import asyncio
 import datetime
 import logging
+import time
 
 import discord
 from discord import app_commands
@@ -9,6 +10,7 @@ from discord.ext import commands, tasks
 
 from config import SCHEDULED_JOBS_ENABLED, STATE_ROOT, TZ
 from core import settings
+from core.feedback import profile as reader_profile
 from core.news import personal
 from core.news.pipeline import NewsPipeline
 from core.news.sources import SHARED_NAMES, personal_entries
@@ -35,7 +37,8 @@ class News(commands.Cog):
         if self._pipeline is None:
             store = NewsStore(STATE_ROOT / 'data' / 'news.sqlite3')
             try:
-                self._pipeline = NewsPipeline(store, limits=settings.get_setting('NEWS_LIMITS', {}))
+                self._pipeline = NewsPipeline(store, limits=settings.get_setting('NEWS_LIMITS', {}),
+                                              profile_provider=self._reader_profile)
             except Exception:
                 store.close()
                 raise
@@ -87,6 +90,20 @@ class News(commands.Cog):
     @dispatch.before_loop
     async def before_news(self):
         await self.bot.wait_until_ready()
+
+    def _reader_profile(self, subscription):
+        """Owner feedback of the last 90 days as a profile; None (no profile) on cold start,
+        without the Feedback cog, or on any error. Runs in a worker thread."""
+        cog = self.bot.get_cog('Feedback')
+        if cog is None:
+            return None
+        try:
+            now = time.time()
+            rows = cog.store.feedback_since(now - reader_profile.WINDOW_DAYS * reader_profile.DAY)
+            return reader_profile.build(rows, now)
+        except Exception as error:  # noqa: BLE001 - selection works without a profile
+            logger.warning('读者画像不可用，%s 本次不使用画像: %s', subscription.id, error)
+            return None
 
     def _view_factory(self, subscription):
         """Feedback buttons for personal subscriptions only; None when the Feedback cog is absent."""

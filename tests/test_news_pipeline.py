@@ -334,7 +334,8 @@ class FeedbackButtonDeliveryTests(PipelineFixture):
         async def two(raw, **kwargs):
             ids = [c['id'] for c in json.loads(raw)['candidates']][:2]
             items = [{'id': i, 'title': f'中文标题{n}', 'summary': '原文提供了具体观察。',
-                      'why_read': '可以想一想：条件是否改变结论？'} for n, i in enumerate(ids)]
+                      'why_read': '可以想一想：条件是否改变结论？', 'tags': ['渥太华']}
+                     for n, i in enumerate(ids)]
             return AIResult(json.dumps({'items': items}, ensure_ascii=False), 'Test', 'model')
 
         self.model.side_effect = two
