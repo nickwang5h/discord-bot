@@ -1,4 +1,5 @@
-from typing import cast
+from datetime import datetime, timezone
+from typing import Any, cast
 
 import discord
 from discord import app_commands
@@ -6,6 +7,30 @@ from discord.ext import commands
 
 from config import BOT_RELEASE, INFO_CURATOR_SERVICE_URL, SCHEDULED_JOBS_ENABLED
 from core import ai_client, settings
+
+
+def claude_status_line(status: dict[str, Any]) -> str:
+    """Render Claude state and usage numbers; never includes credentials."""
+    if not status.get("claude"):
+        return "- Claude Opus 5.5: ➖ 未配置"
+    usage = cast(dict[str, Any], status.get("claude_usage") or {})
+    if usage.get("disabled_until"):
+        until = datetime.fromtimestamp(float(usage["disabled_until"]), timezone.utc).strftime("%H:%M")
+        state = f"⛔ {usage.get('disabled_reason') or '停用'}至 {until} UTC"
+    elif usage.get("cooldown_seconds"):
+        state = f"⏳ 冷却 {int(usage['cooldown_seconds'])}s"
+    elif usage.get("monthly_exhausted"):
+        state = "⏸️ 本月预算已满"
+    elif usage.get("daily_exhausted"):
+        state = "⏸️ 今日预算已满"
+    else:
+        state = "✅ 可用"
+    return (
+        f"- Claude Opus 5.5: {state}"
+        f" · 今日 ${float(usage.get('today_usd', 0)):.2f}/${float(usage.get('daily_usd', 0)):.2f}"
+        f" · {int(usage.get('today_calls', 0))} 次"
+        f" · 本月 ${float(usage.get('month_usd', 0)):.2f}/${float(usage.get('monthly_usd', 0)):g}"
+    )
 
 
 class Health(commands.Cog):
@@ -21,6 +46,7 @@ class Health(commands.Cog):
             f"- Groq: {'✅' if status['groq'] else '➖'}",
             f"- Zhipu: {'✅' if status['zhipu'] else '➖'}",
             f"- OpenRouter: {'✅' if status['openrouter'] else '➖'}",
+            claude_status_line(status),
             f"- Video sidecar: {'✅ 已配置' if INFO_CURATOR_SERVICE_URL else '➖ 未配置'}",
         ]
         cooldown = int(cast(float, status["gemini_cooldown_seconds"]))
