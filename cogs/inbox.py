@@ -84,7 +84,13 @@ class Inbox(commands.Cog):
             logger.warning("Inbox 抓取正文失败 [%s]: %s", url, error)
             return None
 
-    async def _save(self, payload: Payload, *, origin: str, fallback: discord.abc.Messageable):
+    async def save_payload(self, payload: Payload, *, origin: str, fallback: discord.abc.Messageable,
+                           source: str | None = None, via: str | None = None):
+        """Save one payload and post its card; returns the inbox item (existing or new).
+
+        Public for the feedback 📥 button: `source` and `via` attribute the item to the
+        feed source it came from. The reaction/message flows call it without them.
+        """
         article = await self._article(payload.url)
         title = (article.title if article else "") or payload.title or payload.url or "未命名"
         item, created = await asyncio.to_thread(
@@ -95,6 +101,8 @@ class Inbox(commands.Cog):
                 note=payload.note,
                 summary=payload.summary,
                 origin=origin,
+                source=source,
+                via=via,
             )
         )
         if not created:
@@ -136,7 +144,7 @@ class Inbox(commands.Cog):
             return
         payload = payload_from_message(message, replied_to)
         if payload.url or payload.summary:
-            await self._save(payload, origin=message.jump_url, fallback=channel)
+            await self.save_payload(payload, origin=message.jump_url, fallback=channel)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -145,7 +153,7 @@ class Inbox(commands.Cog):
             return
         payload = payload_from_message(message)
         if payload.url or payload.summary:
-            await self._save(payload, origin=message.jump_url, fallback=message.channel)
+            await self.save_payload(payload, origin=message.jump_url, fallback=message.channel)
 
     @app_commands.command(name="inbox", description="[管理员] 列出收件箱里还没读的条目（仅所有者）")
     async def inbox(self, interaction: discord.Interaction):
