@@ -36,6 +36,7 @@
 │   ├── runtime_env.py         # WSL canonical owner-only env loader
 │   ├── news/                  # 共享RSS采集、SQLite状态、订阅流水线与独立专题
 │   ├── feedback/              # 推送反馈存储、板块映射与确定性实体抽取
+│   ├── knowledge/             # 知识库（FTS5 双字索引）、同步、/recall 与每周回看统计
 │   ├── weather.py             # 异步 wttr.in + Open-Meteo 备用天气抓取与 Embed
 │   ├── web_fetcher.py         # 网页大小/超时/跳转/内网访问限制
 │   ├── bilibili_transcript.py # 仅供旧镜像回滚/离线回归，不在当前 /summary 路径
@@ -51,6 +52,7 @@
 │   ├── ai_daily.py            # Hacker News / AI 日报
 │   ├── news.py                # 统一新闻交互／调度，综合新闻、视野拾遗、强电动态
 │   ├── feedback.py            # 推送反馈按钮、反应、曝光同步与 /feedback_stats
+│   ├── knowledge.py           # /recall、/review、知识库同步／清理与每周回看投递
 │   ├── inbox.py               # 收件箱：📥 保存、卡片与 /inbox
 │   ├── daily_reading.py       # 每日英文阅读
 │   ├── weather.py             # 每日天气定时播报与 /weather 查询
@@ -361,6 +363,42 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
   （🆕 / (🆕+👌)），每行附当前选编权重（§3.2，无画像时为 1），末尾 embed 附
   `profile.explain()`：画像依据和当前发给模型的画像片段。零模型调用。
 
+## 6.8 知识回环
+
+把素材池和收件箱沉淀成长期可检索的本地知识库，并每周回看"新知从哪来"。设计见
+[反信息差设计稿](docs/design-anti-info-gap.md) §5；用户说明见 [个人功能说明](docs/personal.md)。
+
+- **存储**（`core/knowledge/store.py`）：`<state-root>/data/knowledge.sqlite3`，`docs` 加普通
+  FTS5 表 `docs_fts`（中日韩文字切成重叠双字后交给 `unicode61`），同一事务内同步增删。SQLite
+  没有 FTS5 时只写不搜，`/recall` 回复"检索不可用"，`/health` 与 healthcheck 只报 warning。
+  所有方法同步、单锁，Cog 一律经 `asyncio.to_thread` 调用；数据库在第一次使用时才打开，
+  卸载 Cog 时关闭。
+- **同步**（`core/knowledge/sync.py`）：`sync_loop` 每 30 分钟执行 `sync_all()`：按
+  `first_seen` 游标只读 `news.sqlite3`（`PoolReader`）、按指纹增量读收件箱、用反馈库的曝光／
+  判定／📥 与收件箱 URL 重算 pin。取不到 Inbox／Feedback Cog 时跳过对应步骤。启动后先等 5 分钟，
+  与反馈曝光同步的 10 分钟网格错开。`maintenance` 每天 03:40 执行保留策略和增量 vacuum。
+  零模型调用。
+- **`/recall question scope days`**（所有者、私密、`default_permissions(administrator)`、
+  `Semaphore(1)` 排队）：`defer` 后调用 `core.knowledge.recall.recall()`：检索词规划
+  （`recall.plan`）→ 本地 bm25 检索与多样化 → 编号证据作答（`recall.answer`）→ 程序按引用
+  编号附链接。无命中不调作答模型；作答失败（`RecallError`）发送零模型兜底的命中列表。收藏
+  条目没有 URL 时用收件箱 `origin` 或卡片消息补跳转链接。每次调用在 `usage` 表按本地日期计数。
+  免费链额度为 `RECALL_LIMITS`（默认每天 40 次、28,000 输出 token），Claude 侧由 §4.2.1 约束。
+- **每周回看**（`core/knowledge/review.py`，纯统计，不调模型）：周界为 `BOT_TIMEZONE` 的周一
+  00:00（跨夏令时的那周为 167／169 小时）。读取反馈库 `stats(since, until=, by=, personal=)`、
+  收件箱 `items()`、知识库 `usage_count()`／`recent()`／`stats()` 与信源清单，输出曝光（个人／
+  共享）、精确与粗反馈分列的 🆕👌🚫、近 4 周新知率、🆕 最多的前 5 个来源、零新知来源与砍源
+  候选（本周曝光 ≥ 3 且 🆕 为 0）、未被推送的个人源、本周无新素材的信源、板块、收件箱、追踪
+  （暂无库时显示"暂无"）、`/recall` 次数和画像摘要；`render()` ≤ 4,000 字符，按行截断。
+  某个 store 读取失败只清空对应段并在末尾注明。
+- **周报投递**：`weekly_report` 每天 09:00 触发、只在周一执行，把上一周发到 `INBOX_CHANNEL_ID`
+  （未设置或找不到频道时记日志跳过，不占用该周）。at-most-once：`claim_report(week)` 每个 ISO
+  周只成功一次 → `run_delivery_job` 内 build 可重试 → 发送前 `report_intent` 持久化 →
+  `channel.send` 一次 → `complete_report(delivered, message_id)`。build 失败记 `failed`，
+  发送异常或取消记 `uncertain`，重启时遗留的 `sending` 由 store 改为 `uncertain`，都不补发。
+- **`/review week`**（所有者、私密）：查看上一周或指定 `YYYY-Www` 的回看，不写投递状态，页脚
+  显示该周定时周报的状态。
+
 ## 7. 链接总结
 
 ### 7.1 `/ask` 联网检索
@@ -427,6 +465,7 @@ description 不超过 3900 字符的 embed。精简不修改 sidecar envelope �
 - `<state-root>/data/personal_sources.json`：所有者的个人信源清单（无密钥），由 `/source_add`／`/source_remove` 原子写入；Git 忽略。
 - `<state-root>/data/news.sqlite3`：新闻原始素材／版本、专题结果、本期运行、订阅投递与模型预算；WAL同目录，Git忽略。
 - `<state-root>/data/feedback.sqlite3`：推送反馈的素材快照、曝光、判定、日志与 📥 记录（素材与判定保留 730 天，日志 365 天）；Git 忽略。
+- `<state-root>/data/knowledge.sqlite3`：知识库文档与 FTS5 索引、`/recall` 免费链预算（14 天）、命令用量计数与每周回看投递状态（104 周）；新闻 90 天（pin 365 天，共 6 万条），收藏不过期，丢弃的收藏 30 天后移出索引；WAL 同目录，Git 忽略。
 - 旧 `data/news_cache.json`／`data/news_digest_history.json`：只作为显式迁移快照和回滚依据，不再由运行入口读写。
 - `<state-root>/data/claude_usage.json`：Claude 个人路由的用量、预留、停用与冷却状态（只有数字，无密钥），保留 40 天；Git 忽略。
 - `<state-root>/data/secrets.json`：slash command 保存的本地密钥，Git 忽略。
@@ -465,11 +504,26 @@ provider key 同样使用独立 runtime，Bot 只收到已验证、无完整字�
 - Gateway latency；
 - provider、内部视频 sidecar 是否配置，以及 Gemini 模型和 cooldown；
 - 定时 Loop 是否运行/失败；
-- 推送频道是否配置。
+- 推送频道（含收件箱／个人频道）是否配置；
+- 知识库一行：文档数、文件大小、FTS5 是否可用、最近一次同步是否有错误（数据库尚未打开时
+  只显示"尚未打开"，不在交互里触发首次打开）。
+
+| 定时任务 | Cog | 时间（`BOT_TIMEZONE`） | 模型 |
+|---|---|---|---|
+| 新闻素材采集 / 订阅调度 | News | 每 60 分钟 / 每 30 秒检查到期订阅 | 订阅生成时 |
+| 反馈曝光同步（含每日清理） | Feedback | 每 10 分钟 | 无 |
+| 知识库同步 | Knowledge | 每 30 分钟，启动后偏移 5 分钟 | 无 |
+| 知识库清理与 vacuum | Knowledge | 每天 03:40 | 无 |
+| 每周回看 | Knowledge | 每天 09:00 触发，只在周一投递上一周 | 无 |
+| 英文阅读 / AI 日报 / 天气 | DailyReading / AIDaily / Weather | 07:30 / 08:15 / 07:00 | 有 / 有 / 无 |
+| Epic 喜加一 / Steam 折扣 | Gaming | 周四 11:30 / 每天 13:30 | 无 |
+
+`BOT_ENABLE_SCHEDULED_JOBS=false` 时以上 Loop 都不启动，手动命令照常可用。
 
 `scripts/healthcheck.py --strict --live` 不调用模型生成，只验证：
 
 - Python/JSON/channel 配置；
+- SQLite FTS5 是否可用（只探测 `:memory:`；不可用只报 warning，永不作为 strict 失败）；
 - 至少一个 AI provider；
 - Wikipedia 联系邮箱是否有效（只报告状态，不显示值）；
 - Gemini key + model metadata；
