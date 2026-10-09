@@ -214,6 +214,16 @@ SQLite 状态、通用选编／投递流程、公开订阅配置。`topics/` 显
 `NEWS_SUBSCRIPTIONS` 可声明独立地区、频率、频道与模型预算；普通专题不需要新增 Cog。
 天气、游戏、链接总结和 HN 日报不参与此次新闻重构。
 
+个人信源与共享信源分开：`sources.py` 只在代码里登记共享组（综合、视野拾遗），
+个人组 `following` 由 `core/news/personal.py` 每次采集／出刊时从
+`<state-root>/data/personal_sources.json` 读取（文件缺失或损坏回落代码默认清单，
+单项校验失败只停该项）。条目按板块 `category`（Ottawa、Sudbury、Investing、AI-Tech、
+General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行环境拼接，不落盘。
+订阅解析拒绝把个人组放进共享专题或投递到 `INBOX_CHANNEL_ID` 以外。所有者通过
+`/source_list`、`/source_add`、`/source_remove`（`cogs/news.py`）经 `JsonStore` 原子
+更新清单；新增前校验主机（https 公网或 RSSHub 路由）并不跟随跳转试取一次。
+`following` 专题在候选阶段按 URL 和归一化标题去掉转发重复及已投递内容。
+
 处理缓存按专题规则版本、参数、候选素材版本及选编历史隔离；正文结构由各专题校验。
 投递身份独立按订阅记录，不再使用全局 `pushed`。同链接原文更新可重新评估，修改规则
 可通过预览重新选编，但不会清空投递身份。电力专题区分规划、采购、授标、政策，要求
@@ -316,6 +326,7 @@ description 不超过 3900 字符的 embed。精简不修改 sidecar envelope �
 默认未设置 `BOT_STATE_DIR` 时保持本地兼容布局；设置后必须是绝对路径，所有可变 JSON 都移到该根目录，代码 checkout 可只读更新：
 
 - `<state-root>/settings.json`：频道 ID、模型偏好等非敏感运行设置；本地默认对应仓库中的 `settings.json`。
+- `<state-root>/data/personal_sources.json`：所有者的个人信源清单（无密钥），由 `/source_add`／`/source_remove` 原子写入；Git 忽略。
 - `<state-root>/data/news.sqlite3`：新闻原始素材／版本、专题结果、本期运行、订阅投递与模型预算；WAL同目录，Git忽略。
 - 旧 `data/news_cache.json`／`data/news_digest_history.json`：只作为显式迁移快照和回滚依据，不再由运行入口读写。
 - `<state-root>/data/secrets.json`：slash command 保存的本地密钥，Git 忽略。
