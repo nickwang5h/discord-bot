@@ -24,6 +24,8 @@ Target precedence:
   2. DISCORD_BOT_SSH_TARGET
   3. ~/.config/discord-bot/vps-target (one line, mode 600)
   4. SSH config alias: discord-bot-vps
+
+Editor for env/settings commands: DISCORD_BOT_REMOTE_EDITOR (default nvim, falls back to vim)
 EOF
 }
 
@@ -36,6 +38,9 @@ fi
 
 command=${1:-help}
 shift || true
+
+# Editor for the private config files on the VPS; falls back to vim when it is absent.
+remote_editor=${DISCORD_BOT_REMOTE_EDITOR:-nvim}
 
 case "$command" in
     help|-h|--help)
@@ -152,22 +157,22 @@ REMOTE
         ;;
     env)
         [[ $# -eq 0 ]] || { usage >&2; exit 2; }
-        printf -v remote_command 'install -d -m 700 %q; touch %q/runtime.env; chmod 600 %q/runtime.env; nano %q/runtime.env' "$runtime_dir" "$runtime_dir" "$runtime_dir" "$runtime_dir"
+        printf -v remote_command 'install -d -m 700 %q; touch %q/runtime.env; chmod 600 %q/runtime.env; e=$(command -v %q || command -v vim); "$e" %q/runtime.env' "$runtime_dir" "$runtime_dir" "$runtime_dir" "$remote_editor" "$runtime_dir"
         exec ssh -t "${ssh_options[@]}" "$ssh_target" "$remote_command"
         ;;
     curator-env)
         [[ $# -eq 0 ]] || { usage >&2; exit 2; }
-        printf -v remote_command 'install -d -m 700 %q; touch %q/runtime.env; chmod 600 %q/runtime.env; nano %q/runtime.env' "$info_runtime" "$info_runtime" "$info_runtime" "$info_runtime"
+        printf -v remote_command 'install -d -m 700 %q; touch %q/runtime.env; chmod 600 %q/runtime.env; e=$(command -v %q || command -v vim); "$e" %q/runtime.env' "$info_runtime" "$info_runtime" "$info_runtime" "$remote_editor" "$info_runtime"
         exec ssh -t "${ssh_options[@]}" "$ssh_target" "$remote_command"
         ;;
     curator-settings)
         [[ $# -eq 0 ]] || { usage >&2; exit 2; }
-        printf -v remote_command 'install -d -m 700 %q; if [ ! -f %q/settings-openrouter.toml ]; then install -m 600 %q/config/video-openrouter.example.toml %q/settings-openrouter.toml; fi; chmod 600 %q/settings-openrouter.toml; nano %q/settings-openrouter.toml' "$info_runtime" "$info_runtime" "$info_repo" "$info_runtime" "$info_runtime" "$info_runtime"
+        printf -v remote_command 'install -d -m 700 %q; if [ ! -f %q/settings-openrouter.toml ]; then install -m 600 %q/config/video-openrouter.example.toml %q/settings-openrouter.toml; fi; chmod 600 %q/settings-openrouter.toml; e=$(command -v %q || command -v vim); "$e" %q/settings-openrouter.toml' "$info_runtime" "$info_runtime" "$info_repo" "$info_runtime" "$info_runtime" "$remote_editor" "$info_runtime"
         exec ssh -t "${ssh_options[@]}" "$ssh_target" "$remote_command"
         ;;
     media-env)
         [[ $# -eq 0 ]] || { usage >&2; exit 2; }
-        printf -v remote_command 'install -d -m 700 %q; touch %q/runtime.env; chmod 600 %q/runtime.env; nano %q/runtime.env' "$media_runtime" "$media_runtime" "$media_runtime" "$media_runtime"
+        printf -v remote_command 'install -d -m 700 %q; touch %q/runtime.env; chmod 600 %q/runtime.env; e=$(command -v %q || command -v vim); "$e" %q/runtime.env' "$media_runtime" "$media_runtime" "$media_runtime" "$remote_editor" "$media_runtime"
         exec ssh -t "${ssh_options[@]}" "$ssh_target" "$remote_command"
         ;;
     images)
