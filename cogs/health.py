@@ -57,6 +57,7 @@ class Health(commands.Cog):
             ("AI 日报", "AIDaily", "ai_news_daily"),
             ("新闻订阅调度", "News", "dispatch"),
             ("共享新闻素材", "News", "hourly_fetch"),
+            ("反馈曝光同步", "Feedback", "sync_loop"),
             ("每日阅读", "DailyReading", "reading_loop"),
             ("天气预报", "Weather", "weather_daily"),
             ("Epic 喜加一", "Gaming", "epic_weekly"),
