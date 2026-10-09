@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -7,6 +9,8 @@ from discord.ext import commands
 
 from config import BOT_RELEASE, INFO_CURATOR_SERVICE_URL, SCHEDULED_JOBS_ENABLED
 from core import ai_client, settings
+
+logger = logging.getLogger(__name__)
 
 
 def claude_status_line(status: dict[str, Any]) -> str:
@@ -58,6 +62,9 @@ class Health(commands.Cog):
             ("新闻订阅调度", "News", "dispatch"),
             ("共享新闻素材", "News", "hourly_fetch"),
             ("反馈曝光同步", "Feedback", "sync_loop"),
+            ("知识库同步", "Knowledge", "sync_loop"),
+            ("知识库清理", "Knowledge", "maintenance"),
+            ("每周回看（周一 09:00）", "Knowledge", "weekly_report"),
             ("每日阅读", "DailyReading", "reading_loop"),
             ("天气预报", "Weather", "weather_daily"),
             ("Epic 喜加一", "Gaming", "epic_weekly"),
@@ -84,7 +91,18 @@ class Health(commands.Cog):
             f"- 阅读频道: {'✅' if settings.get_setting('READING_CHANNEL_ID') else '➖'}",
             f"- 天气频道: {'✅' if settings.get_setting('WEATHER_CHANNEL_ID') else '➖'}",
             f"- 游戏特惠频道: {'✅' if settings.get_setting('GAMING_CHANNEL_ID') else '➖'}",
+            f"- 收件箱/个人频道: {'✅' if settings.get_setting('INBOX_CHANNEL_ID') else '➖'}",
         ]
+
+        knowledge = self.bot.get_cog("Knowledge")
+        if knowledge is None:
+            knowledge_line = "- 知识库: ❌ 未加载"
+        else:
+            try:
+                knowledge_line = await asyncio.to_thread(knowledge.stats_line)
+            except Exception:
+                logger.exception("知识库状态读取失败")
+                knowledge_line = "- 知识库: ❌ 无法打开"
 
         embed = discord.Embed(
             title="🩺 Bot Health",
@@ -97,6 +115,7 @@ class Health(commands.Cog):
         embed.add_field(name="AI Providers", value="\n".join(provider_lines), inline=False)
         embed.add_field(name="Scheduled Tasks", value="\n".join(task_lines), inline=False)
         embed.add_field(name="Channels", value="\n".join(channel_lines), inline=False)
+        embed.add_field(name="Knowledge", value=knowledge_line[:1024], inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

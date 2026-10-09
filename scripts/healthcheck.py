@@ -14,6 +14,7 @@ import aiohttp
 from config import DISCORD_TOKEN
 from core import ai_client, settings, web_search
 from core.feeds import FeedSource, fetch_feed
+from core.knowledge.store import probe_fts5
 
 
 class Report:
@@ -100,6 +101,12 @@ def run_offline_checks(report: Report, *, strict: bool) -> None:
         report.ok("settings.json 是有效 JSON")
     except Exception as error:
         report.error(f"settings.json 无效: {error}")
+
+    # Only /recall depends on FTS5; never a strict failure, so a deploy is not rolled back for it.
+    if probe_fts5():
+        report.ok("SQLite FTS5 可用（知识库全文检索）")
+    else:
+        report.warn("SQLite FTS5 不可用：/recall 将回复检索不可用，知识库只写入")
 
     model_lists = {
         "Groq": ai_client.GROQ_MODELS,

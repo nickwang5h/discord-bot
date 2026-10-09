@@ -11,6 +11,7 @@ from cogs.ai_daily import AIDaily
 from cogs.daily_reading import DailyReading
 from cogs.feedback import Feedback
 from cogs.help import _build_help_embed
+from cogs.knowledge import Knowledge
 from cogs.news import News
 from cogs.weather import Weather
 from config import PROJECT_ROOT
@@ -39,6 +40,7 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch('cogs.news.STATE_ROOT', Path(directory)),
                 patch('cogs.feedback.STATE_ROOT', Path(directory)),
+                patch('cogs.knowledge.STATE_ROOT', Path(directory)),
             ):
                 try:
                     for extension in extensions:
@@ -57,6 +59,7 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(dynamic_items(bot), [])
                 # Loading and unloading never opens the feedback database.
                 self.assertFalse((Path(directory) / 'data' / 'feedback.sqlite3').exists())
+                self.assertFalse((Path(directory) / 'data' / 'knowledge.sqlite3').exists())
 
     async def test_scheduled_jobs_can_be_disabled_without_removing_manual_commands(self):
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
@@ -65,13 +68,15 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch('cogs.news.STATE_ROOT', Path(directory)),
                 patch('cogs.feedback.STATE_ROOT', Path(directory)),
+                patch('cogs.knowledge.STATE_ROOT', Path(directory)),
                 patch.dict(News.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(Feedback.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
+                patch.dict(Knowledge.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(AIDaily.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(DailyReading.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(Weather.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
             ):
-                cogs = [News(bot), AIDaily(bot), DailyReading(bot), Weather(bot), Feedback(bot)]
+                cogs = [News(bot), AIDaily(bot), DailyReading(bot), Weather(bot), Feedback(bot), Knowledge(bot)]
                 try:
                     loop_specs = (
                         (cogs[0], "hourly_fetch"),
@@ -80,6 +85,9 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                         (cogs[2], "reading_loop"),
                         (cogs[3], "weather_daily"),
                         (cogs[4], "sync_loop"),
+                        (cogs[5], "sync_loop"),
+                        (cogs[5], "maintenance"),
+                        (cogs[5], "weekly_report"),
                     )
                     for cog, loop_name in loop_specs:
                         self.assertFalse(getattr(cog, loop_name).is_running(), loop_name)
@@ -91,12 +99,13 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                     }
                     self.assertTrue(
                         {"test_hourly_fetch", "test_ai_news", "test_reading", "test_news", "test_weather",
-                         "feedback_stats"}
+                         "feedback_stats", "recall", "review"}
                         <= command_names
                     )
                 finally:
                     await cogs[0].cog_unload()
                     await cogs[4].cog_unload()
+                    await cogs[5].cog_unload()
                     for cog in cogs[1:4]:
                         cog.cog_unload()
                     await bot.close()
