@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from cogs.inbox import SAVE_EMOJI, Inbox, payload_from_message
-from core.inbox import DONE, PENDING, InboxStore, canonical_url, extract_article
+from core.inbox import DONE, PENDING, InboxStore, canonical_url, extract_article, item_id
 
 PAGE = (
     "<html><head><title>电网储能招标</title></head><body><article><h1>电网储能招标</h1><p>"
@@ -62,6 +62,25 @@ class InboxStoreTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in self.store.pending()], [second["id"]])
         self.assertIsNone(self.store.by_card(999))
 
+    def test_source_and_via_are_optional_attribution(self):
+        item, _ = self.store.save(url="https://example.com/c", title="标题", body="正文",
+                                  source="CBC Ottawa", via="button", now=self.now)
+        self.assertEqual((item["source"], item["via"]), ("CBC Ottawa", "button"))
+        plain, _ = self.store.save(url="https://example.com/d", title="标题", body="正文", now=self.now)
+        self.assertNotIn("source", plain)
+        self.assertNotIn("via", plain)
+
+    def test_entries_written_before_attribution_still_read(self):
+        ident = item_id("https://example.com/old", "")
+        legacy = {"id": ident, "url": "https://example.com/old", "title": "旧条目", "saved_at": "2026-01-01T00:00:00+00:00",
+                  "state": PENDING, "origin": "", "file": "old.md", "chars": 0, "card_message_id": 42}
+        self.store._index.update(lambda index: {**index, ident: legacy})
+        self.assertEqual(self.store.by_card(42)["id"], ident)
+        self.assertEqual([item["id"] for item in self.store.pending()], [ident])
+        again, created = self.store.save(url="https://example.com/old", title="旧条目", body="", source="X")
+        self.assertFalse(created)
+        self.assertNotIn("source", again)
+
     def test_canonical_url_keeps_meaningful_query(self):
         self.assertEqual(canonical_url("HTTPS://Example.com/watch/?v=1&spm=2"),
                          "https://example.com/watch?v=1")
@@ -113,6 +132,28 @@ class OwnerOnlyTests(unittest.IsolatedAsyncioTestCase):
             bot.get_channel.return_value = None
             await cog.on_raw_reaction_add(SimpleNamespace(emoji=SAVE_EMOJI, user_id=1, channel_id=5, message_id=6))
             bot.get_channel.assert_called_once_with(5)
+
+
+class SavePayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_save_payload_posts_card_and_keeps_source(self):
+        bot = MagicMock()
+        bot.get_channel.return_value = None
+        card = SimpleNamespace(id=77, channel=SimpleNamespace(id=5))
+        fallback = SimpleNamespace(send=AsyncMock(return_value=card))
+        # Patch the globals Inbox really uses: load_extension elsewhere may re-import cogs.inbox.
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(Inbox.save_payload.__globals__, {"STATE_ROOT": Path(directory)}), \
+                patch("core.settings.get_setting", return_value=None):
+            cog = Inbox(bot)
+            cog._article = AsyncMock(return_value=None)
+            payload = payload_from_message(message("https://example.com/e"))
+            item = await cog.save_payload(payload, origin="jump", fallback=fallback, source="BBC", via="button")
+            self.assertEqual((item["source"], item["via"]), ("BBC", "button"))
+            fallback.send.assert_awaited_once()
+            self.assertEqual(cog.store.by_card(77)["id"], item["id"])
+            again = await cog.save_payload(payload, origin="jump", fallback=fallback)
+            self.assertEqual(again["id"], item["id"])
+            fallback.send.assert_awaited_once()
 
 
 if __name__ == "__main__":

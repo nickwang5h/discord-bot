@@ -35,6 +35,7 @@
 │   ├── settings.py            # 公共设置/本地密钥分离
 │   ├── runtime_env.py         # WSL canonical owner-only env loader
 │   ├── news/                  # 共享RSS采集、SQLite状态、订阅流水线与独立专题
+│   ├── feedback/              # 推送反馈存储、板块映射与确定性实体抽取
 │   ├── weather.py             # 异步 wttr.in + Open-Meteo 备用天气抓取与 Embed
 │   ├── web_fetcher.py         # 网页大小/超时/跳转/内网访问限制
 │   ├── bilibili_transcript.py # 仅供旧镜像回滚/离线回归，不在当前 /summary 路径
@@ -49,6 +50,8 @@
 │   ├── link_summary.py        # 自动链接总结与 /summary
 │   ├── ai_daily.py            # Hacker News / AI 日报
 │   ├── news.py                # 统一新闻交互／调度，综合新闻、视野拾遗、强电动态
+│   ├── feedback.py            # 推送反馈按钮、反应、曝光同步与 /feedback_stats
+│   ├── inbox.py               # 收件箱：📥 保存、卡片与 /inbox
 │   ├── daily_reading.py       # 每日英文阅读
 │   ├── weather.py             # 每日天气定时播报与 /weather 查询
 │   ├── health.py              # /health 管理员诊断
@@ -307,6 +310,33 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 2. **Steam 愿望单降价监控**：每日 13:30 (`America/Toronto`) 通过免费 CheapShark REST API 轮询监控愿望单游戏，比对当前价格与历史最低价（`cheapestPriceEver`）；仅在游戏新打折或触及/打破历史史低时推送特惠 Embed；提供 `/deal <game>` 实时比价、`/watchlist` 查看愿望单、`/watch_game` 与 `/unwatch_game` 管理员增删接口。
 3. **独立频道隔离**：提供 `/set_gaming_channel` 绑定独立 `#gaming` 频道，保持内容分流。
 
+## 6.7 推送反馈
+
+所有者对推送逐条表态：🆕 新知、👌 已知、🚫 不关心，📥 存进收件箱。只认机器人所有者；
+其他人点按钮只收到私密的"仅所有者可用"，加反应被忽略，都不写数据。数据在
+`<state-root>/data/feedback.sqlite3`（`core/feedback/store.py`），每条素材（规范化 URL 的
+哈希）只保留一条有效判定，每次变化写入 `feedback_log`。设计见
+[反信息差设计稿](docs/design-anti-info-gap.md) §2。
+
+- **按钮**（`cogs/feedback.py`）：`view_for(kind, ref, count, state)` 为一条消息里的前 5 条
+  各生成一行 `①🆕 ①👌 ①🚫 ①📥`，`custom_id` 为 `fb:<n|w>:<run 或追踪投递 id>:<序号>:<值>`。
+  按钮是 `DynamicItem`，加载 Cog 时 `add_dynamic_items` 注册、卸载时移除，重启后旧消息上的
+  按钮照常可用。点击后按 run 反查条目，写入判定并原地重画视图：当前精确判定和已存收件箱
+  的按钮变绿；再点同一个判定按钮即撤销（规则在 `FeedbackStore.record` 内）。编辑消息失败
+  只记 warning，判定照常保存；写库失败私密提示，不重试。📥 先 defer，再调用
+  `Inbox.save_payload(..., source=信源, via='button')` 并记 `saves`。
+- **反应**：任何 bot 消息上所有者自己加的 🆕👌🚫 按消息 ID 反查条目（新闻 run 或收件箱卡片）。
+  1 条为精确判定；n 条时每条记权重 1/n 的粗判定（`coarse`），粗判定不覆盖精确判定。移除
+  反应只撤销这条反应自己写的判定。Bot 不预置反应、不回消息，共享频道内容不变；收件箱的
+  📥✅🗑️ 流程不受影响。
+- **曝光同步**：`sync_loop` 每 10 分钟在线程里只读 `news.sqlite3` 的 `deliveries`
+  （`core/news/reader.py`），按游标增量写入曝光；每天一次清理过期数据。
+  `BOT_ENABLE_SCHEDULED_JOBS=false` 时不启动；`/health` 的定时任务一节显示其状态。
+  数据库在第一次使用时才打开，卸载 Cog 时关闭。
+- **`/feedback_stats days by`**（所有者、私密、`default_permissions(administrator)`）：最近
+  7–365 天（默认 30）按来源、板块或标签列出前 15 组的曝光数、已评数、加权 🆕/👌/🚫 和新知率
+  （🆕 / (🆕+👌)）。零模型调用。
+
 ## 7. 链接总结
 
 ### 7.1 `/ask` 联网检索
@@ -372,6 +402,7 @@ description 不超过 3900 字符的 embed。精简不修改 sidecar envelope �
 - `<state-root>/settings.json`：频道 ID、模型偏好等非敏感运行设置；本地默认对应仓库中的 `settings.json`。
 - `<state-root>/data/personal_sources.json`：所有者的个人信源清单（无密钥），由 `/source_add`／`/source_remove` 原子写入；Git 忽略。
 - `<state-root>/data/news.sqlite3`：新闻原始素材／版本、专题结果、本期运行、订阅投递与模型预算；WAL同目录，Git忽略。
+- `<state-root>/data/feedback.sqlite3`：推送反馈的素材快照、曝光、判定、日志与 📥 记录（素材与判定保留 730 天，日志 365 天）；Git 忽略。
 - 旧 `data/news_cache.json`／`data/news_digest_history.json`：只作为显式迁移快照和回滚依据，不再由运行入口读写。
 - `<state-root>/data/claude_usage.json`：Claude 个人路由的用量、预留、停用与冷却状态（只有数字，无密钥），保留 40 天；Git 忽略。
 - `<state-root>/data/secrets.json`：slash command 保存的本地密钥，Git 忽略。

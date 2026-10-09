@@ -9,10 +9,16 @@ from discord.ext import commands
 
 from cogs.ai_daily import AIDaily
 from cogs.daily_reading import DailyReading
+from cogs.feedback import Feedback
 from cogs.help import _build_help_embed
 from cogs.news import News
 from cogs.weather import Weather
 from config import PROJECT_ROOT
+
+
+def dynamic_items(bot):
+    # load_extension imports a fresh module object, so compare class names.
+    return [item.__name__ for item in bot._connection._view_store._dynamic_items.values()]
 
 
 class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
@@ -30,11 +36,15 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with tempfile.TemporaryDirectory() as directory:
-            with patch('cogs.news.STATE_ROOT', Path(directory)):
+            with (
+                patch('cogs.news.STATE_ROOT', Path(directory)),
+                patch('cogs.feedback.STATE_ROOT', Path(directory)),
+            ):
                 try:
                     for extension in extensions:
                         await bot.load_extension(extension)
                     self.assertEqual(set(bot.extensions), set(extensions))
+                    self.assertEqual(dynamic_items(bot), ['FeedbackButton'])
 
                     embed = _build_help_embed(bot.tree.get_commands())
                     rendered = "\n".join(field.value or '' for field in embed.fields)
@@ -44,6 +54,9 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                     for extension in list(bot.extensions):
                         await bot.unload_extension(extension)
                     await bot.close()
+                self.assertEqual(dynamic_items(bot), [])
+                # Loading and unloading never opens the feedback database.
+                self.assertFalse((Path(directory) / 'data' / 'feedback.sqlite3').exists())
 
     async def test_scheduled_jobs_can_be_disabled_without_removing_manual_commands(self):
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
@@ -51,12 +64,14 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             with (
                 patch('cogs.news.STATE_ROOT', Path(directory)),
+                patch('cogs.feedback.STATE_ROOT', Path(directory)),
                 patch.dict(News.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
+                patch.dict(Feedback.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(AIDaily.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(DailyReading.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(Weather.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
             ):
-                cogs = [News(bot), AIDaily(bot), DailyReading(bot), Weather(bot)]
+                cogs = [News(bot), AIDaily(bot), DailyReading(bot), Weather(bot), Feedback(bot)]
                 try:
                     loop_specs = (
                         (cogs[0], "hourly_fetch"),
@@ -64,6 +79,7 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                         (cogs[1], "ai_news_daily"),
                         (cogs[2], "reading_loop"),
                         (cogs[3], "weather_daily"),
+                        (cogs[4], "sync_loop"),
                     )
                     for cog, loop_name in loop_specs:
                         self.assertFalse(getattr(cog, loop_name).is_running(), loop_name)
@@ -74,12 +90,14 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                         for command in cog.get_app_commands()
                     }
                     self.assertTrue(
-                        {"test_hourly_fetch", "test_ai_news", "test_reading", "test_news", "test_weather"}
+                        {"test_hourly_fetch", "test_ai_news", "test_reading", "test_news", "test_weather",
+                         "feedback_stats"}
                         <= command_names
                     )
                 finally:
                     await cogs[0].cog_unload()
-                    for cog in cogs[1:]:
+                    await cogs[4].cog_unload()
+                    for cog in cogs[1:4]:
                         cog.cog_unload()
                     await bot.close()
 

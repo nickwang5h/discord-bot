@@ -95,10 +95,14 @@ class InboxStore:
         note: str = "",
         summary: str = "",
         origin: str = "",
+        source: str | None = None,
+        via: str | None = None,
         now: datetime | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Store an item, or add the note to the one already saved for this source.
 
+        `source` (feed source name) and `via` (e.g. `button`) are optional and only
+        written when given, so older index entries without them stay valid.
         Returns the item and whether it is new.
         """
         identifier = item_id(url, body or summary or title)
@@ -123,6 +127,10 @@ class InboxStore:
             "file": f"{moment:%Y-%m-%d}-{_slug(title)}-{identifier}.md",
             "chars": len(body),
         }
+        if source:
+            item["source"] = source
+        if via:
+            item["via"] = via
         lines = [f"# {title}", ""]
         if item["url"]:
             lines += [f"来源：{item['url']}"]
