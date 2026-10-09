@@ -4,7 +4,8 @@ import re
 
 from core import settings
 from core.news.models import Subscription
-from core.news.sources import GROUPS
+from core.news.personal import PERSONAL_GROUPS
+from core.news.sources import GROUP_NAMES
 
 DEFAULTS = [
     {'id': 'general', 'topic': 'general', 'source_groups': ['general'],
@@ -17,6 +18,7 @@ DEFAULTS = [
     {'id': 'following', 'topic': 'following', 'source_groups': ['following'],
      'times': ['08:20', '18:20'], 'channel_setting': 'INBOX_CHANNEL_ID'},
 ]
+PERSONAL_TOPICS = frozenset({'following'})
 
 
 def bounded_int(value, minimum, maximum):
@@ -37,9 +39,14 @@ def parse_subscription(raw, topics, channels):
     if not isinstance(topic, str) or topic not in topics:
         raise ValueError('专题未注册')
     groups, times = raw.get('source_groups'), raw.get('times')
-    if (not isinstance(groups, list) or not 1 <= len(groups) <= len(GROUPS)
-            or any(not isinstance(g, str) or g not in GROUPS for g in groups)):
+    if (not isinstance(groups, list) or not 1 <= len(groups) <= len(GROUP_NAMES)
+            or any(not isinstance(g, str) or g not in GROUP_NAMES for g in groups)):
         raise ValueError('信源组无效')
+    # Personal feeds stay personal: only personal topics read them, only the inbox receives them.
+    personal = topic in PERSONAL_TOPICS or any(g in PERSONAL_GROUPS for g in groups)
+    if personal and (topic not in PERSONAL_TOPICS or any(g not in PERSONAL_GROUPS for g in groups)
+                     or raw.get('channel_setting') != 'INBOX_CHANNEL_ID' or 'channel_id' in raw):
+        raise ValueError('个人信源组只能由个人专题读取，并只投递到 INBOX_CHANNEL_ID')
     if (not isinstance(times, list) or not 1 <= len(times) <= 4
             or any(not isinstance(t, str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', t) for t in times)
             or len(set(times)) != len(times)):

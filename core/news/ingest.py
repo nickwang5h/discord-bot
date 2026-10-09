@@ -8,7 +8,7 @@ from urllib.parse import quote, urlsplit
 
 from core.feeds import fetch_feeds
 from core.news.models import Article, fingerprint
-from core.news.sources import GROUPS, sources_for
+from core.news.sources import GROUP_NAMES, sources_for
 
 RAW_WINDOW = 3 * 86400
 MAX_PER_SOURCE = 40
@@ -68,7 +68,7 @@ class Ingester:
             now = time.time()
             if not force and self.last_fetch is not None and now - self.last_fetch < 3600:
                 return 0
-            items = await fetch_feeds(sources_for(GROUPS), max_age_seconds=RAW_WINDOW,
+            items = await fetch_feeds(sources_for(GROUP_NAMES), max_age_seconds=RAW_WINDOW,
                                      max_items_per_source=MAX_PER_SOURCE)
             articles = [article for item in items if (article := normalize(item, now))]
             count = self.store.upsert_articles(articles, now=now)

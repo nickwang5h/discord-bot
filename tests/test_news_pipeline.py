@@ -16,7 +16,7 @@ from core.news.ingest import Ingester, normalize
 from core.news.migration import legacy_records
 from core.news.models import Subscription
 from core.news.pipeline import NewsPipeline
-from core.news.sources import GROUPS, sources_for
+from core.news.sources import SHARED_GROUPS, sources_for
 from core.news.store import NewsStore
 from core.news.subscriptions import (
     DEFAULTS,
@@ -314,23 +314,25 @@ class MigrationAndConfigurationTests(unittest.TestCase):
         self.assertEqual((subs[3].topic, subs[3].source_groups), ('following', ('following',)))
         self.assertEqual(subs[2].params, {'countries': ['US', 'CA']})
         self.assertEqual(len(sources_for(('general',))), 8)
-        self.assertEqual(len(GROUPS['discovery']), 9)
-        shared = {source.name for group in ('general', 'discovery') for source in GROUPS[group]}
+        self.assertEqual(len(SHARED_GROUPS['discovery']), 9)
+        shared = {source.name for group in ('general', 'discovery') for source in SHARED_GROUPS[group]}
         self.assertFalse(shared & {'B站关注', '华尔街见闻'})
 
     def test_private_rsshub_feeds_exist_only_when_the_runtime_names_them(self):
-        from core.news import sources
+        from core.news import personal
         env = {'RSSHUB_URL': 'https://rss.example/', 'RSSHUB_ACCESS_KEY': 'k', 'BILIBILI_UID': '42'}
-        with patch.object(sources, 'get_env', env.get):
-            (telegram,) = sources._rsshub('/telegram/channel/cnwallstreet', 'Finance', '华尔街见闻')
-            (bilibili,) = sources._rsshub('/bilibili/followings/video/{uid}', 'Video', 'B站关注')
+        telegram_entry = {'name': '华尔街见闻', 'category': 'Investing', 'rsshub': '/telegram/channel/cnwallstreet'}
+        bilibili_entry = {'name': 'B站关注', 'category': 'General', 'rsshub': '/bilibili/followings/video/{uid}'}
+        with patch.object(personal, 'get_env', env.get):
+            telegram = personal.feed_source(telegram_entry)
+            bilibili = personal.feed_source(bilibili_entry)
         self.assertEqual(telegram.url, 'https://rss.example/telegram/channel/cnwallstreet?key=k')
         self.assertEqual(bilibili.url, 'https://rss.example/bilibili/followings/video/42?key=k')
-        self.assertEqual((telegram.category, bilibili.name), ('Finance', 'B站关注'))
+        self.assertEqual((telegram.category, bilibili.name), ('Investing', 'B站关注'))
         for missing in ('RSSHUB_URL', 'RSSHUB_ACCESS_KEY', 'BILIBILI_UID'):
             partial = {key: value for key, value in env.items() if key != missing}
-            with patch.object(sources, 'get_env', partial.get):
-                self.assertEqual(sources._rsshub('/bilibili/followings/video/{uid}', 'Video', 'B站关注'), ())
+            with patch.object(personal, 'get_env', partial.get):
+                self.assertIsNone(personal.feed_source(bilibili_entry))
 
     def test_bad_subscription_does_not_disable_valid_siblings(self):
         with patch('core.news.subscriptions.settings.load_settings', return_value={'NEWS_SUBSCRIPTIONS': [DEFAULTS[0], {'id': 'bad'}]}):

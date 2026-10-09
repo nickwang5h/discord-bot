@@ -1,15 +1,6 @@
-"""Explicit RSS groups; adding an existing source type is configuration only."""
-from config import get_env
+"""Explicit RSS groups. Shared groups are code; personal groups come from the owner's JSON list."""
 from core.feeds import FeedSource
-
-
-def _rsshub(path, category, name):
-    """A feed from the private RSSHub instance, present only when the runtime names it."""
-    base, key = get_env('RSSHUB_URL'), get_env('RSSHUB_ACCESS_KEY')
-    if not base or not key or '{uid}' in path and not get_env('BILIBILI_UID'):
-        return ()
-    path = path.format(uid=get_env('BILIBILI_UID'))
-    return (FeedSource(category, f"{base.rstrip('/')}{path}?key={key}", name),)
+from core.news import personal
 
 
 GENERAL = (
@@ -32,12 +23,26 @@ DISCOVERY = (
     FeedSource('Science', 'https://www.nature.com/nature.rss', 'Nature'),
     FeedSource('AI', 'https://openai.com/blog/rss.xml', 'OpenAI'),
 )
-# The owner's own subscriptions. They never join the shared groups above.
-FOLLOWING = (_rsshub('/bilibili/followings/video/{uid}', 'Video', 'B站关注')
-             + _rsshub('/telegram/channel/cnwallstreet', 'Finance', '华尔街见闻'))
-GROUPS = {'general': GENERAL, 'discovery': DISCOVERY, 'following': FOLLOWING}
+# Shared with friends. Personal sources never join these groups.
+SHARED_GROUPS = {'general': GENERAL, 'discovery': DISCOVERY}
+GROUP_NAMES = (*SHARED_GROUPS, *personal.PERSONAL_GROUPS)
+SHARED_NAMES = frozenset(source.name for group in SHARED_GROUPS.values() for source in group)
+
+
+def personal_entries():
+    """Valid personal entries and errors, re-read from disk on every call."""
+    return personal.load(SHARED_NAMES)
+
+
+def group_sources(group):
+    if group in SHARED_GROUPS:
+        return SHARED_GROUPS[group]
+    if group not in personal.PERSONAL_GROUPS:
+        raise KeyError(group)
+    entries, _ = personal_entries()
+    return tuple(source for entry in entries if (source := personal.feed_source(entry)) is not None)
 
 
 def sources_for(groups):
     # The same RSS endpoint is fetched once even when multiple topics subscribe.
-    return list({source.url: source for group in groups for source in GROUPS[group]}.values())
+    return list({source.url: source for group in groups for source in group_sources(group)}.values())
