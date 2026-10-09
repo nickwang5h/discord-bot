@@ -92,7 +92,11 @@ class NewsPipeline:
         async with lock:
             return await self.build(subscription, period, preview=True)
 
-    async def publish(self, subscription, period, channel, *, retry_policy=None):
+    async def publish(self, subscription, period, channel, *, retry_policy=None, view_factory=None):
+        """`view_factory(run_id, item_count)` builds optional message components (feedback buttons).
+
+        It runs after the send intent is persisted; without it the send call is unchanged.
+        """
         lock = self.locks.setdefault(subscription.id, asyncio.Lock())
         if lock.locked():
             return None
@@ -111,8 +115,18 @@ class NewsPipeline:
             nonlocal intent_written
             self.store.intent(run_id, edition.selected)
             intent_written = True
+            view = None
+            if view_factory is not None:
+                try:
+                    view = view_factory(run_id, len(edition.selected))
+                except Exception as error:  # noqa: BLE001 - buttons are optional, the send is not
+                    logger.warning('新闻按钮视图构造失败，改为无按钮发送 [%s]: %s', subscription.id, error)
+                    view = None
             # No automatic retry of this operation, even for timeouts or cancellation.
-            message = await channel.send(embeds=edition.embeds)
+            if view is None:
+                message = await channel.send(embeds=edition.embeds)
+            else:
+                message = await channel.send(embeds=edition.embeds, view=view)
             if type(message.id) is not int or message.id <= 0:
                 raise RuntimeError('Discord 未返回有效消息 ID')
             self.store.complete(run_id, message.id)
@@ -133,14 +147,16 @@ class NewsPipeline:
                     logger.exception('新闻运行状态写入失败；重启后必须核查发送意图')
             raise
 
-    async def publish_due(self, subscriptions, now, channel_lookup):
+    async def publish_due(self, subscriptions, now, channel_lookup, *, views=None):
+        """`views(subscription)` returns that subscription's `view_factory` (or None)."""
         from core.news.subscriptions import period_for
 
         async def run(subscription, period):
             try:
                 channel = channel_lookup(subscription.channel_id)
                 if channel is not None:
-                    await self.publish(subscription, period, channel)
+                    factory = views(subscription) if views is not None else None
+                    await self.publish(subscription, period, channel, view_factory=factory)
             except Exception:
                 logger.exception('新闻订阅执行失败: %s', subscription.id)
 

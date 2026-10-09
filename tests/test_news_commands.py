@@ -1,8 +1,9 @@
 import asyncio
 import datetime
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from cogs import news as news_module
 from cogs.news import News
@@ -32,7 +33,7 @@ class NewsCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_slow_subscription_does_not_block_next_dispatch_tick(self):
         started, second_started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-        async def publish(subs, now, lookup):
+        async def publish(subs, now, lookup, **kwargs):
             if subs[0].id == 'slow':
                 started.set()
                 await release.wait()
@@ -67,3 +68,60 @@ class NewsCommandTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(getattr(commands[name], 'checks', []))
         self.assertFalse(self.cog.dispatch.is_running())
         self.assertFalse(self.cog.hourly_fetch.is_running())
+
+
+class NewsFeedbackWiringTests(unittest.IsolatedAsyncioTestCase):
+    """§2.8: only personal subscriptions get feedback buttons, scheduled and manual alike."""
+
+    def setUp(self):
+        self.bot = MagicMock()
+        self.feedback = object()
+        self.bot.get_cog.side_effect = lambda name: self.feedback if name == 'Feedback' else None
+        with patch.object(news_module, 'SCHEDULED_JOBS_ENABLED', False):
+            self.cog = News(self.bot)
+        self.cog._pipeline = MagicMock(
+            store=SimpleNamespace(ready=True, close=MagicMock()),
+            publish=AsyncMock(return_value=None), preview=AsyncMock(return_value=None),
+            publish_due=AsyncMock(),
+        )
+        self.following = Subscription('following', 'following', ('following',), ('08:20',), 2)
+        self.general = Subscription('general', 'general', ('general',), ('08:45',), 1)
+
+    async def asyncTearDown(self):
+        await self.cog.cog_unload()
+
+    def interaction(self):
+        return SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()),
+                               followup=SimpleNamespace(send=AsyncMock()), channel=None, guild=None)
+
+    async def test_factory_builds_run_buttons_for_personal_topics_only(self):
+        self.assertIsNone(self.cog._view_factory(self.general))
+        self.assertIsNone(self.cog._view_factory(Subscription('d', 'discovery', ('discovery',), ('08:00',), 1)))
+        with patch('cogs.feedback.view_for', return_value='VIEW') as view_for:
+            factory = self.cog._view_factory(self.following)
+            self.assertEqual(factory(7, 3), 'VIEW')
+        view_for.assert_called_once_with('run', 7, 3)
+        self.feedback = None
+        self.assertIsNone(self.cog._view_factory(self.following))
+
+    async def test_manual_publish_passes_factory_and_preview_does_not(self):
+        target = SimpleNamespace(id=2)
+        for sub, personal in ((self.following, True), (self.general, False)):
+            self.cog._pipeline.publish.reset_mock()
+            with patch.object(self.cog, '_subscription', return_value=sub), \
+                    patch.object(self.cog, '_channel', return_value=target):
+                await self.cog._execute(self.interaction(), sub.id)
+                await self.cog._execute(self.interaction(), sub.id, preview=True)
+            factory = self.cog._pipeline.publish.await_args.kwargs['view_factory']
+            self.assertEqual(factory is not None, personal)
+            self.cog._pipeline.preview.assert_awaited_with(sub, ANY)
+            self.assertEqual(self.cog._pipeline.preview.await_args.kwargs, {})
+
+    async def test_scheduled_dispatch_passes_the_factory_lookup(self):
+        now = datetime.datetime.now(TZ)
+        sub = replace(self.following, times=(now.strftime('%H:%M'),))
+        with patch.object(news_module, 'load_subscriptions', return_value=([sub], [])):
+            await News.dispatch.coro(self.cog)
+        await asyncio.gather(*self.cog._scheduled.values())
+        kwargs = self.cog._pipeline.publish_due.await_args.kwargs
+        self.assertEqual(kwargs['views'], self.cog._view_factory)

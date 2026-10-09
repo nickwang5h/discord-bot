@@ -77,7 +77,7 @@ class News(commands.Cog):
                     previous = self._scheduled.get(sub.id)
                     if previous is None or previous.done():
                         self._scheduled[sub.id] = asyncio.create_task(
-                            self.pipeline.publish_due([sub], now, self.bot.get_channel))
+                            self.pipeline.publish_due([sub], now, self.bot.get_channel, views=self._view_factory))
                 # Drop completed tasks for subscriptions removed from the configuration.
                 self._scheduled = {key: task for key, task in self._scheduled.items() if not task.done()}
         except Exception:
@@ -87,6 +87,15 @@ class News(commands.Cog):
     @dispatch.before_loop
     async def before_news(self):
         await self.bot.wait_until_ready()
+
+    def _view_factory(self, subscription):
+        """Feedback buttons for personal subscriptions only; None when the Feedback cog is absent."""
+        topic = TOPICS.get(subscription.topic)
+        if not getattr(topic, 'personal', False) or self.bot.get_cog('Feedback') is None:
+            return None
+        from cogs.feedback import view_for
+
+        return lambda run_id, count: view_for('run', run_id, count)
 
     def _subscription(self, identity):
         subscriptions, _ = load_subscriptions(TOPICS)
@@ -125,7 +134,8 @@ class News(commands.Cog):
         else:
             if not subscription.enabled:
                 raise ValueError('该订阅已停用')
-            edition = await self.pipeline.publish(subscription, period, target)
+            edition = await self.pipeline.publish(subscription, period, target,
+                                                  view_factory=self._view_factory(subscription))
             if edition:
                 await interaction.followup.send(f'{edition_name(period)}已发送。', ephemeral=True)
                 return

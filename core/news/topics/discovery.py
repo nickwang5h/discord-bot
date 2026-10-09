@@ -26,6 +26,7 @@ MAX_CONTENT_CHARS = 600
 MAX_AGE_SECONDS = 3 * 86400
 MAX_OUTPUT_TOKENS = 3000
 MAX_DESCRIPTION_CHARS = 3800
+NUMBERS = "①②③④⑤"  # Same marks as the feedback buttons (cogs/feedback.py).
 DISCOVERY_INTRO = "从熟悉的话题之外，找一点值得多想的东西。以下依据 RSS 摘要推荐原文。"
 
 
@@ -44,10 +45,11 @@ def _text(value, limit):
     return " ".join(html.unescape(" ".join(parser.parts)).split())[:limit]
 
 
-def _prepare_candidates(items):
-    publishers = {}
+def _eligible(items):
+    """Candidates with raw RSS evidence, in input order (no ids yet, no cap)."""
     seen = set()
     now = time.time()
+    result = []
     for item in items:
         url = _source_url(item.get("url"))
         title = _text(item.get("title"), 120)
@@ -64,25 +66,40 @@ def _prepare_candidates(items):
         if not math.isfinite(timestamp) or not now - MAX_AGE_SECONDS <= timestamp <= now + 3600:
             continue
         publisher = _text(item.get("publisher") or item.get("source"), 60)
-        candidate = {
+        result.append({
             "title": title, "url": url, "content": content,
             "publisher": publisher,
             "source": _text(item.get("source"), 30),
             "published_at": datetime.datetime.fromtimestamp(timestamp, datetime.UTC).isoformat()
                 if published is not None else None,
             "cache_url": item["url"],
-        }
-        publishers.setdefault(publisher, deque()).append(candidate)
+        })
         seen.add(url)
-    candidates = []
-    while publishers and len(candidates) < MAX_CANDIDATES:
+    return result
+
+
+def _interleave(candidates, limit=MAX_CANDIDATES):
+    """Round-robin by publisher (first-seen order), keeping each publisher's input order."""
+    publishers = {}
+    for candidate in candidates:
+        publishers.setdefault(candidate["publisher"], deque()).append(candidate)
+    ordered = []
+    while publishers and len(ordered) < limit:
         for publisher in list(publishers):
-            candidates.append({"id": f"R{len(candidates) + 1:02}", **publishers[publisher].popleft()})
+            ordered.append(publishers[publisher].popleft())
             if not publishers[publisher]:
                 del publishers[publisher]
-            if len(candidates) == MAX_CANDIDATES:
+            if len(ordered) == limit:
                 break
-    return candidates
+    return ordered
+
+
+def _numbered(candidates):
+    return [{"id": f"R{index + 1:02}", **candidate} for index, candidate in enumerate(candidates)]
+
+
+def _prepare_candidates(items):
+    return _numbered(_interleave(_eligible(items)))
 
 
 def title_key(value):
@@ -137,15 +154,17 @@ def _normalize_recommendations(text, candidates):
     return selected
 
 
-def _render_recommendations(items, intro=DISCOVERY_INTRO):
+def _render_recommendations(items, intro=DISCOVERY_INTRO, *, numbered=False):
     def plain(value):
         return discord.utils.escape_markdown(value).replace("@", "＠").replace("[", "［").replace("]", "］")
 
     blocks = []
-    for item in items:
+    for index, item in enumerate(items):
         date = item["published_at"][:10] if item["published_at"] else "日期未提供"
+        # Button i acts on payload position i: numbering follows the list order exactly.
+        mark = f"{NUMBERS[index]} " if numbered else ""
         blocks.append(
-            f"**[{plain(item['title'])}]({item['url']})**\n"
+            f"{mark}**[{plain(item['title'])}]({item['url']})**\n"
             f"{plain(item['summary'])}\n"
             f"**值得一读**：{plain(item['why_read'])}\n"
             f"— {plain(item['publisher'])} · {date}"
@@ -159,6 +178,7 @@ def _render_recommendations(items, intro=DISCOVERY_INTRO):
 class DiscoveryTopic:
     name = "discovery"
     version = "1"
+    personal = False
     max_age = MAX_AGE_SECONDS
     heading = "🧭 视野拾遗"
     intro = DISCOVERY_INTRO
@@ -212,9 +232,11 @@ class DiscoveryTopic:
     def identity(self, item):
         return fingerprint([item["url"], item["_version"]])
 
+    numbered = False
+
     def render(self, selected, edition, attribution):
         embed = create_ai_embed(title=f"{self.heading} · {edition}",
-                                description=_render_recommendations(selected, self.intro),
+                                description=_render_recommendations(selected, self.intro, numbered=self.numbered),
                                 color=discord.Color.purple())
         embed.set_footer(text=f"✨ Powered by {attribution}")
         return [embed]
@@ -224,6 +246,8 @@ class FollowingTopic(DiscoveryTopic):
     """The owner's own feed list, grouped into sections by each source's category."""
     name = "following"
     version = "2"
+    personal = True
+    numbered = True
     dedupe_titles = True
     heading = "📌 我的订阅"
     intro = "你自己的信源里，这一期值得看的。"

@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from core.ai_providers import AIResult
 from core.feeds import FeedItem
@@ -50,7 +50,7 @@ async def generate(raw, **kwargs):
     return AIResult(json.dumps({'items': [item]}, ensure_ascii=False), 'Test', 'model')
 
 
-class NewsPipelineTests(unittest.IsolatedAsyncioTestCase):
+class PipelineFixture(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'news.sqlite3'
@@ -76,6 +76,8 @@ class NewsPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.pipeline = NewsPipeline(self.store)
         self.pipeline.ingester.collect = AsyncMock()
 
+
+class NewsPipelineTests(PipelineFixture):
     async def test_same_raw_material_is_available_to_two_independent_topics(self):
         self.store.upsert_articles([article()])
         self.assertIsNotNone(await self.publish())
@@ -274,6 +276,76 @@ class NewsPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(updated.version, first.version)
         versions = self.store.db.execute('SELECT evidence FROM article_versions WHERE article_id=?', (first.id,)).fetchall()
         self.assertEqual({json.loads(row['evidence'])['content'] for row in versions}, {'Raw evidence one', 'Raw evidence two'})
+
+
+class FeedbackButtonDeliveryTests(PipelineFixture):
+    """§2.8: buttons only through `view_factory`; the shared send call stays unchanged."""
+
+    async def test_without_factory_send_arguments_are_unchanged(self):
+        self.store.upsert_articles([article()])
+        edition = await self.publish()
+        self.channel.send.assert_awaited_once_with(embeds=edition.embeds)
+
+    async def test_factory_runs_after_intent_and_sends_once_with_view(self):
+        self.store.upsert_articles([article(1), article(2)])
+        seen = []
+
+        def factory(run_id, count):
+            seen.append((run_id, count, self.store.get_run(run_id)['status']))
+            return 'VIEW'
+
+        sub = subscription('following', 'following')
+        edition = await self.pipeline.publish(sub, '2026-08-01/08:00', self.channel,
+                                              retry_policy=ONCE, view_factory=factory)
+        run_id = self.store.status('following')['latest']['id']
+        self.assertEqual(seen, [(run_id, len(edition.selected), 'sending')])
+        self.channel.send.assert_awaited_once_with(embeds=edition.embeds, view='VIEW')
+        self.assertEqual(self.store.get_run(run_id)['status'], 'delivered')
+
+    async def test_factory_failure_sends_once_without_buttons(self):
+        self.store.upsert_articles([article()])
+
+        def factory(run_id, count):
+            raise RuntimeError('no buttons')
+
+        with self.assertLogs('core.news.pipeline', 'WARNING'):
+            edition = await self.pipeline.publish(subscription(), '2026-08-01/08:00', self.channel,
+                                                  retry_policy=ONCE, view_factory=factory)
+        self.channel.send.assert_awaited_once_with(embeds=edition.embeds)
+        self.assertEqual(self.store.status('general')['latest']['status'], 'delivered')
+
+    async def test_publish_due_asks_for_a_factory_per_subscription(self):
+        self.store.upsert_articles([article()])
+        asked = []
+
+        def views(sub):
+            asked.append(sub.id)
+            return None
+
+        now = datetime.datetime(2026, 8, 1, 8, 0, tzinfo=datetime.UTC)
+        await self.pipeline.publish_due([subscription()], now, lambda _: self.channel, views=views)
+        self.assertEqual(asked, ['general'])
+        self.channel.send.assert_awaited_once_with(embeds=ANY)
+        self.assertEqual(set(self.channel.send.await_args.kwargs), {'embeds'})
+
+    async def test_following_numbers_items_in_payload_order_and_discovery_does_not(self):
+        self.store.upsert_articles([article(1), article(2)])
+
+        async def two(raw, **kwargs):
+            ids = [c['id'] for c in json.loads(raw)['candidates']][:2]
+            items = [{'id': i, 'title': f'中文标题{n}', 'summary': '原文提供了具体观察。',
+                      'why_read': '可以想一想：条件是否改变结论？'} for n, i in enumerate(ids)]
+            return AIResult(json.dumps({'items': items}, ensure_ascii=False), 'Test', 'model')
+
+        self.model.side_effect = two
+        edition = await self.pipeline.preview(subscription('following', 'following'), '2026-08-01/08:00')
+        body = edition.embeds[0].description
+        self.assertLess(body.index('① **[中文标题0]'), body.index('② **[中文标题1]'))
+        self.assertEqual([item['title'] for item in edition.selected], ['中文标题0', '中文标题1'])
+        discovery = TOPICS['discovery'].render(edition.selected, '早间', 'Test')[0].description
+        self.assertNotIn('①', discovery)
+        self.assertFalse(TOPICS['discovery'].personal)
+        self.assertTrue(TOPICS['following'].personal)
 
 
 class MigrationAndConfigurationTests(unittest.TestCase):
