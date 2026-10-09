@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from config import SCHEDULED_JOBS_ENABLED, STATE_ROOT
+from core.feedback import profile as reader_profile
 from core.feedback.boards import LABELS
 from core.feedback.store import DAY, FeedbackStore
 from core.news.reader import DeliveryReader
@@ -96,11 +97,20 @@ def _fmt(value):
     return f'{value:.1f}'.rstrip('0').rstrip('.') if value else '0'
 
 
-def stats_line(bucket, label):
+def stats_line(bucket, label, weight=None):
     rate = bucket['new_rate']
     return (f'{label} · 曝光 {bucket["exposures"]} · 已评 {bucket["rated"]} · '
             f'🆕{_fmt(bucket["new"])} 👌{_fmt(bucket["known"])} 🚫{_fmt(bucket["skip"])} · '
-            f'新知率 {"—" if rate is None else f"{rate:.0%}"}')
+            f'新知率 {"—" if rate is None else f"{rate:.0%}"}'
+            + ('' if weight is None else f' · 权重 {weight:.2f}'))
+
+
+def current_weight(profile, group, name):
+    """The selection weight (§3.2) a stats row currently has; 1.0 without a profile."""
+    if profile is None:
+        return 1.0
+    return {'source': profile.weight_for_source, 'board': profile.weight_for_board,
+            'tag': profile.weight_for_tag}[group](name)
 
 
 class Feedback(commands.Cog):
@@ -311,17 +321,37 @@ class Feedback(commands.Cog):
         group = by.value if by else 'source'
         await interaction.response.defer(ephemeral=True)
         result = await asyncio.to_thread(self.store.stats, time.time() - days * DAY, by=group)
-        await interaction.followup.send(self.render_stats(result, days, group), ephemeral=True)
+        profile = await asyncio.to_thread(self.current_profile)
+        await interaction.followup.send(self.render_stats(result, days, group, profile), ephemeral=True,
+                                        embed=self.profile_embed(profile))
+
+    def current_profile(self, now=None):
+        """The profile `following` selection uses right now (same window), or None."""
+        now = time.time() if now is None else now
+        try:
+            return reader_profile.build(self.store.feedback_since(now - reader_profile.WINDOW_DAYS * DAY), now)
+        except Exception:
+            logger.exception('读者画像计算失败')
+            return None
 
     @staticmethod
-    def render_stats(result, days, group):
+    def profile_embed(profile):
+        # Up to ~2,700 characters: an embed description (4,096) fits it, a message (2,000) does not.
+        lines = reader_profile.explain(profile).split('\n')
+        if profile is not None:
+            lines[-1] = f'```json\n{lines[-1]}\n```'
+        return discord.Embed(title='当前发给模型的画像片段', description='\n'.join(lines)[:4000])
+
+    @staticmethod
+    def render_stats(result, days, group, profile=None):
         totals = result['totals']
         lines = [f'**反馈统计 · 最近 {days} 天 · 按{BY_CHOICES[group]}**', stats_line(totals, '合计')]
         if not totals['exposures'] and not totals['rated']:
             lines.append('还没有曝光或反馈记录。')
         for bucket in result['rows'][:STATS_ROWS]:
             name = LABELS.get(bucket['name'], bucket['name']) if group == 'board' else bucket['name']
-            lines.append(stats_line(bucket, f'`{str(name)[:40]}`'))
+            weight = current_weight(profile, group, bucket['name'])
+            lines.append(stats_line(bucket, f'`{str(name)[:40]}`', weight))
         if len(result['rows']) > STATS_ROWS:
             lines.append(f'……另有 {len(result["rows"]) - STATS_ROWS} 组')
         return '\n'.join(lines)[:1900]
