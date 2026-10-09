@@ -271,6 +271,29 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 更新清单；新增前校验主机（https 公网或 RSSHub 路由）并不跟随跳转试取一次。
 `following` 专题在候选阶段按 URL 和归一化标题去掉转发重复及已投递内容。
 
+个人专题（`topic.personal`，目前只有 `following`）在共享流水线里多三处分支，共享专题的
+`prepare`/`validate`/`generate_ai`/`channel.send` 调用参数与之前逐字相同：
+
+- **画像**：`NewsPipeline(profile_provider=...)` 由 `cogs/news.py` 注入，在线程里从 Feedback
+  Cog 的 `FeedbackStore.feedback_since(90 天)` 调 `core.feedback.profile.build()`；取不到 Cog、
+  冷启动或出错都返回 None（记 warning），选编退回无画像。画像经 `prepare(..., profile=)` 进入
+  `prepared.data`，因而进入处理缓存键；`validate(..., profile=)` 做确定性后处理。
+- **候选排序**（`core/news/topics/ranking.py`，纯函数）：无画像时就是原来的按发布方交错；有画像时
+  板块保底 min(3, n) + 按 W_board×候选数最大余数法分剩余名额 → 板块内按 W_source 平滑加权轮询、
+  来源内新到旧 → 至少 ceil(20%) 名额给有效评价 < 5 的冷来源、权重在 0.25 下限的来源至少 1 条
+  （换掉同板块里高权重来源最后入选的一条）→ 各板块按名额平滑轮询合并。输入 JSON 超过 30,000
+  字符时缩小名额重新排序。模型输入增加 `reader_profile`、`tag_vocabulary`（≤2,500 字符），
+  输出每条增加 1–3 个 `tags`（NFKC、2–12 字、去重、过滤 URL/Markdown，坏标签丢弃不致整批失败）。
+  所有标签都是强不关心（s≥3 且 n+k=0）的条目丢弃，全部已知且不以“新进展：”开头的后置。
+  标签随条目进入 `runs.payload`/`deliveries.payload`，反馈曝光同步优先采用这些模型标签。
+- **路由**：`generate_ai(..., route=topic.route, json_schema=topic.json_schema)`，即
+  `personal.following`（§4.2.1）；免费链仍是 `json_mode=True` 加同一提示词和本地校验。
+  `FollowingTopic.version` 为 "3"。
+- **按钮**：`publish(..., view_factory=)`/`publish_due(..., views=)`；`cogs/news.py` 只给个人专题、
+  且 Feedback Cog 已加载时传 `view_for('run', run_id, n)`，定时与手动相同，预览不挂。factory 在
+  发送意图写入之后调用，异常时记 warning 并以无按钮方式仍只发一次；不传时 `channel.send` 参数
+  不变。`following` 渲染 ①…⑤ 与 payload 顺序（即曝光 `position`、按钮序号）一致。
+
 处理缓存按专题规则版本、参数、候选素材版本及选编历史隔离；正文结构由各专题校验。
 投递身份独立按订阅记录，不再使用全局 `pushed`。同链接原文更新可重新评估，修改规则
 可通过预览重新选编，但不会清空投递身份。电力专题区分规划、采购、授标、政策，要求
@@ -335,7 +358,8 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
   数据库在第一次使用时才打开，卸载 Cog 时关闭。
 - **`/feedback_stats days by`**（所有者、私密、`default_permissions(administrator)`）：最近
   7–365 天（默认 30）按来源、板块或标签列出前 15 组的曝光数、已评数、加权 🆕/👌/🚫 和新知率
-  （🆕 / (🆕+👌)）。零模型调用。
+  （🆕 / (🆕+👌)），每行附当前选编权重（§3.2，无画像时为 1），末尾 embed 附
+  `profile.explain()`：画像依据和当前发给模型的画像片段。零模型调用。
 
 ## 7. 链接总结
 
