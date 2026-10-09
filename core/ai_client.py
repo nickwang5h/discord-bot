@@ -392,10 +392,15 @@ async def _ask_claude(
         request["system"] = system
 
     input_tokens = output_tokens = 0
+    settle = True
     try:
         try:
             async with asyncio.timeout(CLAUDE_TIMEOUT_SECONDS):
                 response = await claude.messages.create(**request)
+        except asyncio.CancelledError:
+            # The request may already be billed; keep the reservation (conservative).
+            settle = False
+            raise
         except Exception as error:
             _record_claude_error(error)
             return None
@@ -425,7 +430,8 @@ async def _ask_claude(
                 return None
         return AIResult(content, "Claude", CLAUDE_MODEL)
     finally:
-        claude_budget.settle(reservation, input_tokens, output_tokens)
+        if settle:
+            claude_budget.settle(reservation, input_tokens, output_tokens)
 
 
 async def generate_ai(

@@ -345,6 +345,15 @@ class BudgetTests(ClaudeTestCase):
         if claude_budget.month_key(day1) == claude_budget.month_key(day2):
             self.assertAlmostEqual(status["month_usd"], 0.5)
 
+    async def test_cancelled_request_keeps_its_reservation(self):
+        import asyncio
+
+        self.create.side_effect = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await ai_client.generate_ai("q", route="recall.answer")
+        self.assertGreater(self.today()["reserved_usd"], 0.08)
+        self.assertEqual(self.today()["spent_usd"], 0.0)
+
     def test_unreleased_reservation_after_crash_stays_conservative(self):
         now = time.time()
         claude_budget.reserve("recall.answer", 0.55, 15, now=now)  # never settled
