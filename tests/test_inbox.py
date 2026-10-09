@@ -140,8 +140,10 @@ class SavePayloadTests(unittest.IsolatedAsyncioTestCase):
         bot.get_channel.return_value = None
         card = SimpleNamespace(id=77, channel=SimpleNamespace(id=5))
         fallback = SimpleNamespace(send=AsyncMock(return_value=card))
-        with tempfile.TemporaryDirectory() as directory, patch("cogs.inbox.STATE_ROOT", Path(directory)), \
-                patch("cogs.inbox.settings.get_setting", return_value=None):
+        # Patch the globals Inbox really uses: load_extension elsewhere may re-import cogs.inbox.
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(Inbox.save_payload.__globals__, {"STATE_ROOT": Path(directory)}), \
+                patch("core.settings.get_setting", return_value=None):
             cog = Inbox(bot)
             cog._article = AsyncMock(return_value=None)
             payload = payload_from_message(message("https://example.com/e"))
