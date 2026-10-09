@@ -1,13 +1,15 @@
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from cogs.inbox import SAVE_EMOJI, Inbox, payload_from_message
-from core.inbox import DONE, PENDING, InboxStore, canonical_url, extract_article, item_id
+from core.inbox import (
+    DONE, DROPPED, PENDING, InboxStore, canonical_url, extract_article, item_id, state_time,
+)
 
 PAGE = (
     "<html><head><title>电网储能招标</title></head><body><article><h1>电网储能招标</h1><p>"
@@ -80,6 +82,34 @@ class InboxStoreTests(unittest.TestCase):
         again, created = self.store.save(url="https://example.com/old", title="旧条目", body="", source="X")
         self.assertFalse(created)
         self.assertNotIn("source", again)
+
+    def test_state_change_records_state_at_and_items_lists_every_state(self):
+        first, _ = self.store.save(url="https://example.com/1", title="一", body="正文", now=self.now)
+        second, _ = self.store.save(url="https://example.com/2", title="二", body="正文",
+                                    now=self.now + timedelta(hours=1))
+        third, _ = self.store.save(url="https://example.com/3", title="三", body="正文",
+                                   now=self.now + timedelta(hours=2))
+        self.assertNotIn("state_at", first)
+        self.assertEqual(state_time(first), first["saved_at"])
+        done_at = self.now + timedelta(days=1)
+        done = self.store.set_state(first["id"], DONE, now=done_at)
+        self.assertEqual(done["state_at"], done_at.isoformat(timespec="seconds"))
+        # Repeating the same state keeps the original change time.
+        again = self.store.set_state(first["id"], DONE, now=done_at + timedelta(days=1))
+        self.assertEqual(again["state_at"], done_at.isoformat(timespec="seconds"))
+        self.store.set_state(second["id"], DROPPED, now=done_at)
+        self.assertEqual([item["id"] for item in self.store.items()], [third["id"], second["id"], first["id"]])
+        self.assertEqual({item["state"] for item in self.store.items()}, {PENDING, DONE, DROPPED})
+        self.assertEqual([item["id"] for item in self.store.pending()], [third["id"]])
+
+    def test_legacy_entry_without_state_at_falls_back_to_saved_at(self):
+        ident = item_id("https://example.com/legacy", "")
+        legacy = {"id": ident, "url": "https://example.com/legacy", "title": "旧", "state": DONE,
+                  "saved_at": "2026-01-01T00:00:00+00:00", "origin": "", "file": "legacy.md", "chars": 0}
+        self.store._index.update(lambda index: {**index, ident: legacy})
+        self.assertEqual(state_time(self.store.items()[0]), "2026-01-01T00:00:00+00:00")
+        dropped = self.store.set_state(ident, DROPPED, now=self.now)
+        self.assertEqual(state_time(dropped), self.now.isoformat(timespec="seconds"))
 
     def test_canonical_url_keeps_meaningful_query(self):
         self.assertEqual(canonical_url("HTTPS://Example.com/watch/?v=1&spm=2"),

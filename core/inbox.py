@@ -56,6 +56,11 @@ def extract_article(html: str) -> Article | None:
     return Article(title=title, text=text.strip()[:MAX_BODY_CHARS])
 
 
+def state_time(item: dict[str, Any]) -> str:
+    """When the item reached its current state; entries older than `state_at` use `saved_at`."""
+    return item.get("state_at") or item["saved_at"]
+
+
 def _slug(title: str) -> str:
     return _SLUG_UNSAFE.sub("-", title).strip("-")[:40] or "item"
 
@@ -82,6 +87,10 @@ class InboxStore:
     def pending(self) -> list[dict[str, Any]]:
         items = [item for item in self._index.read().values() if item["state"] == PENDING]
         return sorted(items, key=lambda item: item["saved_at"], reverse=True)
+
+    def items(self) -> list[dict[str, Any]]:
+        """Every item (pending, done and dropped), newest saved first."""
+        return sorted(self._index.read().values(), key=lambda item: item["saved_at"], reverse=True)
 
     def path(self, item: dict[str, Any]) -> Path:
         return self.items_dir / item["file"]
@@ -158,12 +167,17 @@ class InboxStore:
 
         self._index.update(update)
 
-    def set_state(self, identifier: str, state: str) -> dict[str, Any]:
+    def set_state(self, identifier: str, state: str, *, now: datetime | None = None) -> dict[str, Any]:
+        """Change the state; an actual change also records `state_at` (repeats keep it)."""
         if state not in STATES:
             raise ValueError(f"未知状态: {state}")
+        moment = (now or datetime.now().astimezone()).isoformat(timespec="seconds")
 
         def update(index: dict[str, Any]) -> dict[str, Any]:
-            index[identifier]["state"] = state
+            item = index[identifier]
+            if item["state"] != state:
+                item["state"] = state
+                item["state_at"] = moment
             return index
 
         return self._index.update(update)[identifier]
