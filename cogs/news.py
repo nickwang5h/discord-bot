@@ -9,7 +9,9 @@ from discord.ext import commands, tasks
 
 from config import SCHEDULED_JOBS_ENABLED, STATE_ROOT, TZ
 from core import settings
+from core.news import personal
 from core.news.pipeline import NewsPipeline
+from core.news.sources import SHARED_NAMES, personal_entries
 from core.news.store import NewsStore
 from core.news.subscriptions import edition_name, load_subscriptions, period_for
 from core.news.topics import TOPICS
@@ -194,6 +196,66 @@ class News(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def test_scheduled_digest(self, interaction: discord.Interaction):
         await self._execute(interaction, 'discovery', current_channel=True)
+
+    # Personal feed list. Owner-only: these sources reach only the owner's inbox channel.
+    async def _owner_only(self, interaction):
+        if await self.bot.is_owner(discord.Object(id=interaction.user.id)):
+            return True
+        await interaction.response.send_message('个人信源只对机器人所有者开放。', ephemeral=True)
+        return False
+
+    @app_commands.command(name='source_list', description='[管理员] 列出个人信源（仅所有者，只投递到收件箱）')
+    async def source_list(self, interaction: discord.Interaction):
+        if not await self._owner_only(interaction):
+            return
+        entries, errors = await asyncio.to_thread(personal_entries)
+        lines = [f'**个人信源 {len(entries)} 个**（订阅 following → 收件箱频道）']
+        for section in personal.SECTIONS:
+            names = [f'`{e["name"]}`' + (' ·RSSHub' if 'rsshub' in e else '')
+                     for e in entries if e['category'] == section]
+            lines.append(f'**{section}**：' + ('、'.join(names) if names else '（无）'))
+        lines.extend(errors)
+        await interaction.response.send_message('\n'.join(lines)[:1900], ephemeral=True)
+
+    @app_commands.command(name='source_add', description='[管理员] 新增个人信源：RSSHub 路由或 https RSS 地址（仅所有者）')
+    @app_commands.describe(name='显示名称（唯一）', address='RSSHub 路由如 /twitter/user/名字，或 https 公网 RSS 地址',
+                           section='所属板块')
+    @app_commands.choices(section=[app_commands.Choice(name=s, value=s) for s in personal.SECTIONS])
+    async def source_add(self, interaction: discord.Interaction, name: str, address: str,
+                         section: app_commands.Choice[str]):
+        if not await self._owner_only(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            entry = personal.entry_from_input(name, address, section.value)
+            count = await personal.probe(entry)
+            await asyncio.to_thread(personal.add, entry, SHARED_NAMES)
+        except (ValueError, personal.ProbeError) as error:
+            await interaction.followup.send(f'未添加：{error}', ephemeral=True)
+            return
+        await interaction.followup.send(
+            f'✅ 已添加 `{entry["name"]}`（{entry["category"]}），试取到 {count} 条；下次采集生效，无需重启。',
+            ephemeral=True)
+
+    @app_commands.command(name='source_remove', description='[管理员] 删除个人信源（仅所有者）')
+    @app_commands.describe(name='要删除的信源名称')
+    async def source_remove(self, interaction: discord.Interaction, name: str):
+        if not await self._owner_only(interaction):
+            return
+        try:
+            await asyncio.to_thread(personal.remove, name)
+        except ValueError as error:
+            await interaction.response.send_message(f'未删除：{error}', ephemeral=True)
+            return
+        await interaction.response.send_message(f'🗑️ 已删除 `{name}`；已采集的素材不再进入后续选编。', ephemeral=True)
+
+    @source_remove.autocomplete('name')
+    async def _source_names(self, interaction: discord.Interaction, current: str):
+        if not await self.bot.is_owner(discord.Object(id=interaction.user.id)):
+            return []
+        entries, _ = await asyncio.to_thread(personal_entries)
+        return [app_commands.Choice(name=e['name'], value=e['name'])
+                for e in entries if current.casefold() in e['name'].casefold()][:25]
 
 
 async def setup(bot):
