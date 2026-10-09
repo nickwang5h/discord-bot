@@ -429,25 +429,28 @@ class FeedbackStore:
         return [{**dict(row), 'coarse': bool(row['coarse']), 'personal': bool(row['personal']),
                  'tags': json.loads(row['tags'])} for row in rows]
 
-    def stats(self, since, *, by='source', personal=None):
+    def stats(self, since, *, by='source', personal=None, until=None):
         """Weighted counts since `since`, grouped by `source`, `board`, `tag` or nothing (`None`).
 
         Exposures count distinct items shown since max(since, tracking_since); verdict sums
         use each verdict's weight (exact 1, coarse 1/n). `personal` limits both sides to
-        items shown personally (True) or in shared channels (False).
+        items shown personally (True) or in shared channels (False). `until` (exclusive)
+        bounds both the exposure time and the verdict time. Each bucket also splits the
+        verdicts into `exact` counts and `coarse` weighted sums per verdict.
         """
         if by not in {'source', 'board', 'tag', None}:
             raise ValueError('未知的分组方式')
         start = max(float(since), self.tracking_since)
         flag = '' if personal is None else 'AND e.personal = ?'
         params = () if personal is None else (int(bool(personal)),)
+        end = float('inf') if until is None else float(until)
         with self._lock:
             exposed = self.db.execute(f'''SELECT i.key, i.source, i.board, i.tags FROM items i WHERE EXISTS
-                (SELECT 1 FROM exposures e WHERE e.key=i.key AND e.shown_at >= ? {flag})''',
-                (start, *params)).fetchall()
+                (SELECT 1 FROM exposures e WHERE e.key=i.key AND e.shown_at >= ? AND e.shown_at < ? {flag})''',
+                (start, end, *params)).fetchall()
             judged = self.db.execute(f'''SELECT f.verdict, f.weight, f.coarse, i.source, i.board, i.tags
-                FROM feedback f JOIN items i USING(key) WHERE f.updated_at >= ? AND EXISTS
-                (SELECT 1 FROM exposures e WHERE e.key=f.key {flag})''', (float(since), *params)).fetchall()
+                FROM feedback f JOIN items i USING(key) WHERE f.updated_at >= ? AND f.updated_at < ? AND EXISTS
+                (SELECT 1 FROM exposures e WHERE e.key=f.key {flag})''', (float(since), end, *params)).fetchall()
 
         def groups(row):
             if by is None:
@@ -457,7 +460,8 @@ class FeedbackStore:
             return [row[by]]
 
         def blank(name):
-            return {'name': name, 'exposures': 0, 'rated': 0, 'exact': 0, 'new': 0.0, 'known': 0.0, 'skip': 0.0}
+            return {'name': name, 'exposures': 0, 'rated': 0, 'exact': 0, 'new': 0.0, 'known': 0.0, 'skip': 0.0,
+                    'exact_verdicts': dict.fromkeys(VERDICTS, 0), 'coarse_verdicts': dict.fromkeys(VERDICTS, 0.0)}
 
         totals, table = blank(None), {}
         for row in exposed:
@@ -468,6 +472,10 @@ class FeedbackStore:
                 bucket['rated'] += 1
                 bucket['exact'] += 0 if row['coarse'] else 1
                 bucket[row['verdict']] += row['weight']
+                if row['coarse']:
+                    bucket['coarse_verdicts'][row['verdict']] += row['weight']
+                else:
+                    bucket['exact_verdicts'][row['verdict']] += 1
         for bucket in [totals, *table.values()]:
             decided = bucket['new'] + bucket['known']
             bucket['new_rate'] = bucket['new'] / decided if decided else None

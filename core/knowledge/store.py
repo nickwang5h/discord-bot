@@ -40,6 +40,7 @@ MAX_NEWS_DOCS = 60_000
 INBOX_WARN_DOCS = 5_000
 DROPPED_INBOX_TTL = 30 * DAY
 BUDGET_TTL_DAYS = 14
+USAGE_TTL_DAYS = 104 * 7
 REPORT_TTL = 104 * 7 * DAY
 VACUUM_PAGES = 2000
 
@@ -123,6 +124,9 @@ class KnowledgeStore:
             CREATE INDEX IF NOT EXISTS docs_source ON docs(source);
             CREATE TABLE IF NOT EXISTS budgets (
                 day TEXT PRIMARY KEY, calls INTEGER NOT NULL, output_tokens INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS usage (
+                day TEXT NOT NULL, name TEXT NOT NULL, count INTEGER NOT NULL,
+                PRIMARY KEY (day, name));
             CREATE TABLE IF NOT EXISTS reports (
                 week TEXT PRIMARY KEY, status TEXT NOT NULL, channel_id TEXT NOT NULL,
                 message_id TEXT, payload TEXT NOT NULL DEFAULT '',
@@ -332,7 +336,7 @@ class KnowledgeStore:
         News: 90 days, pinned 365 days, at most 60,000 (unpinned go first). Inbox
         pending/done never expire (over 5,000 only warns); dropped inbox items leave
         the index 30 days after ``state_at``. ``keep_until`` in the future protects
-        a document from age expiry. Budgets 14 days, reports 104 weeks.
+        a document from age expiry. Budgets 14 days, usage counters and reports 104 weeks.
         """
         now = time.time() if now is None else now
         protected = "(keep_until IS NOT NULL AND keep_until > :now)"
@@ -353,6 +357,9 @@ class KnowledgeStore:
                     result[name] = self.db.execute(f"DELETE FROM docs WHERE {where}", {"now": now}).rowcount
                 result["budgets"] = self.db.execute(
                     f"DELETE FROM budgets WHERE day < date(?, 'unixepoch', '-{BUDGET_TTL_DAYS} days')",
+                    (now,)).rowcount
+                result["usage"] = self.db.execute(
+                    f"DELETE FROM usage WHERE day < date(?, 'unixepoch', '-{USAGE_TTL_DAYS} days')",
                     (now,)).rowcount
                 result["reports"] = self.db.execute(
                     "DELETE FROM reports WHERE created_at < ?", (now - REPORT_TTL,)).rowcount
@@ -382,6 +389,21 @@ class KnowledgeStore:
             updated = self.db.execute("""UPDATE budgets SET calls=calls+1, output_tokens=output_tokens+?
                 WHERE day=? AND calls < ? AND output_tokens+? <= ?""", (tokens, day, max_calls, tokens, max_tokens))
             return updated.rowcount == 1
+
+    # -- command usage (weekly report) ----------------------------------------
+
+    def bump_usage(self, name: str, day: str) -> None:
+        """Count one use of ``name`` (e.g. 'recall') on local date ``day`` (YYYY-MM-DD)."""
+        with self._lock, self.db:
+            self.db.execute("INSERT INTO usage VALUES (?, ?, 1) "
+                            "ON CONFLICT(day, name) DO UPDATE SET count=count+1", (day, name))
+
+    def usage_count(self, name: str, since_day: str, until_day: str) -> int:
+        """Uses of ``name`` on days ``since_day`` <= day < ``until_day``."""
+        with self._lock:
+            row = self.db.execute("SELECT COALESCE(SUM(count), 0) FROM usage WHERE name=? AND day>=? AND day<?",
+                                  (name, since_day, until_day)).fetchone()
+            return int(row[0])
 
     # -- weekly report (at-most-once) ----------------------------------------
 
