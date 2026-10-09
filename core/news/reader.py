@@ -63,16 +63,18 @@ class PoolReader(_ReadOnly):
 class DeliveryReader(_ReadOnly):
     """Delivered news items and the runs (one Discord message each) that carried them."""
 
-    def deliveries_since(self, cursor, *, limit=500):
-        """Delivery rows with `delivered_at >= cursor`, oldest first, payload decoded.
+    def deliveries_since(self, cursor, *, limit=500, strict=False):
+        """Delivery rows with `delivered_at >= cursor` (`>` when `strict`), oldest first,
+        payload decoded.
 
-        Inclusive on purpose: rows sharing the cursor timestamp are re-read, so callers must
-        be idempotent. A page holds about `limit` rows but never splits one timestamp (one
-        run's items share it), so paging by the last timestamp cannot skip rows.
+        A page holds about `limit` rows but never splits one timestamp (one run's items
+        share it), so the next page can start strictly after the last timestamp. The
+        inclusive default re-reads rows at the cursor; callers must be idempotent.
         """
-        rows = self._query('''SELECT subscription, identity, url, article_version, run_id, channel_id,
-            message_id, status, payload, delivered_at FROM deliveries WHERE delivered_at >= ?
-            AND delivered_at <= COALESCE((SELECT delivered_at FROM deliveries WHERE delivered_at >= ?
+        op = '>' if strict else '>='
+        rows = self._query(f'''SELECT subscription, identity, url, article_version, run_id, channel_id,
+            message_id, status, payload, delivered_at FROM deliveries WHERE delivered_at {op} ?
+            AND delivered_at <= COALESCE((SELECT delivered_at FROM deliveries WHERE delivered_at {op} ?
                 ORDER BY delivered_at LIMIT 1 OFFSET ?), 9e999)
             ORDER BY delivered_at, run_id, identity''', (cursor, cursor, max(1, int(limit)) - 1))
         for row in rows:
