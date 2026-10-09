@@ -66,6 +66,12 @@ def run_offline_checks(report: Report, *, strict: bool) -> None:
     else:
         report.warn("没有配置任何 AI provider")
 
+    # Claude only serves personal routes; a missing key is a normal free-chain setup.
+    if provider_status["claude"]:
+        report.ok(f"Claude 个人路由已配置（{provider_status['claude_model']}）")
+    else:
+        report.ok("Claude 个人路由未配置，个人路由使用免费 provider 链")
+
     if web_search.wikipedia_contact_configured():
         report.ok("BOT_CONTACT_EMAIL 已配置（值已隐藏）")
     elif strict:
@@ -119,6 +125,18 @@ async def _get_json(
         return await response.json()
 
 
+async def _check_claude_model() -> None:
+    """Model metadata lookup only; this endpoint does not generate tokens."""
+    import anthropic
+
+    async with anthropic.AsyncAnthropic(
+        api_key=settings.get_secret("ANTHROPIC_API_KEY"),
+        max_retries=0,
+        timeout=15.0,
+    ) as claude:
+        await claude.models.retrieve(ai_client.CLAUDE_MODEL)
+
+
 async def run_live_checks(report: Report) -> None:
     timeout = aiohttp.ClientTimeout(total=15)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -134,6 +152,13 @@ async def run_live_checks(report: Report) -> None:
                 report.ok(f"Gemini key/model 有效（{model}）")
             except Exception as error:
                 report.error(f"Gemini key/model 验证失败: {error}")
+
+        if settings.get_secret("ANTHROPIC_API_KEY"):
+            try:
+                await _check_claude_model()
+                report.ok(f"Claude key/model 有效（{ai_client.CLAUDE_MODEL}）")
+            except Exception as error:
+                report.error(f"Claude key/model 验证失败: {type(error).__name__}")
 
         try:
             data = await _get_json(session, "https://openrouter.ai/api/v1/models")

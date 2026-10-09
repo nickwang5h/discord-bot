@@ -28,6 +28,7 @@
 ├── core/
 │   ├── ai_client.py           # 按能力路由 AI provider 与 Gemini cooldown
 │   ├── ai_providers.py        # OpenAI-compatible 请求与统一 AIResult
+│   ├── claude_budget.py       # Claude 个人路由的美元预算、预留结算与停用/冷却状态
 │   ├── feeds.py               # 异步 RSS 下载、UTC 时间过滤和并发容错
 │   ├── jobs.py                # RetryPolicy、single-flight 和单次发送事务
 │   ├── storage.py             # 带进程锁和原子替换的 JSON Store
@@ -77,7 +78,7 @@
 `core.ai_providers.AIResult` 保存：
 
 - `text`：正文；
-- `provider`：Gemini、Groq、Zhipu 或 OpenRouter；
+- `provider`：Claude、Gemini、Groq、Zhipu 或 OpenRouter；
 - `model`：实际模型 ID。
 
 Groq、智谱和 OpenRouter 都使用 OpenAI-compatible Chat Completions 协议，因此共享 `request_openai_compatible()`。该函数负责：
@@ -157,6 +158,49 @@ OpenRouter 当前内置节点：
 Qwen 3.6 在本项目中使用非思考模式，并要求 Groq 只返回最终答案；GPT-OSS 采用 low reasoning；智谱 GLM-4.7/4.5 Flash 都关闭 thinking。这些设置避免基础分类和摘要的推理过程占满 completion token 预算。Groq 已公告 `llama-3.3-70b-versatile` 将于 2026-08-16 下线，因此不再把它列为候选。OpenAI-compatible 接口若返回 `finish_reason=length`，会将该候选视为失败并切换到下一个模型，不会把不完整正文交给 Discord 或 JSON 解析器。
 
 Gemini Search 和最后兜底固定使用稳定版 `gemini-3.6-flash`。该模型于 2026-07-21 GA；相较 3.5 Flash，官方定位是更强的复杂任务表现、更少的 token/轮次和更低价格。它不参与普通任务的首选链路。
+
+### 4.2.1 个人路由：Claude Opus 5.5
+
+`generate_ai()` 有两个可选参数 `route` 和 `json_schema`。不传 `route`（所有共享专题、
+`/ask`、日报、阅读等现有调用）时路径与上文完全一致。只有 `route` 属于
+`ai_client.CLAUDE_ROUTES`、`use_search=False`、`ANTHROPIC_API_KEY` 已配置、未停用/冷却、
+且预算允许时，才先调用官方 `anthropic` SDK 的 `AsyncAnthropic`（`claude-opus-5-5`，
+`max_retries=0`，超时 90 秒，非流式）；任何失败都在同一次调用内继续走上面的免费链，
+调用方无感。`json_mode=True` 但没有 `json_schema` 的调用不走 Claude。
+
+| route | effort | Claude `max_tokens` | 输入上限（字符） | 每日次数 |
+|---|---|---|---|---|
+| `personal.following` | medium | 6000 | 30000 | 4 |
+| `watch.confirm` | low | 3000 | 12000 | 6 |
+| `watch.aliases` | low | 1000 | 1000 | 3 |
+| `recall.plan` | low | 1000 | 1500 | 15 |
+| `recall.answer` | medium | 4000 | 10000 | 15 |
+| `review.summary` | low | 1500 | 8000 | 1 |
+
+请求只含 `model`、`max_tokens`、`system`、单条 user message 和
+`output_config={"effort": ..., "format": json_schema?}`：不传 `thinking`（Opus 5.5 固定
+adaptive，`disabled`/`budget_tokens` 会 400）、不做 assistant prefill、不传 `tool_choice`、
+不开服务端 `fallbacks`。正文只取 `type == "text"` 的 block；有 schema 时还要能被
+`json.loads` 解析，调用方的本地校验器照常运行。
+
+预算（`core/claude_budget.py`，状态在 `<STATE_ROOT>/data/claude_usage.json`，`JsonStore`
+原子更新，保留 40 天）：调用前按最坏成本预留（输入估算：中日韩字符 1.5 token/字、其他
+1 token/3 字符，含 system；输出按 `max_tokens`；价格 $4/$20 每百万 token），结束后按
+`response.usage` 结算并释放预留，崩溃遗留的预留不释放。公开设置 `CLAUDE_LIMITS` 可调
+`daily_usd`（默认 0.60，0.05–1.50）、`monthly_usd`（默认 19，1–60）、`daily_calls`
+（默认 30，1–80），越界值被钳位，无效值用默认值；再加上每条 route 的每日次数，任一超限
+本次直接走免费链。日、月按 UTC。
+
+失败分类：额度耗尽（400 且消息含 "credit balance is too low"、402 或 `billing_error`）
+停用到下一个 UTC 日 00:00；429 按 `retry-after` 冷却（缺省 60 秒，最多 1 小时）；5xx/529
+冷却 60 秒；401/403/404 停用到下一个 UTC 日并记 error；其他 400 记 error；网络错误和超时
+只降级本次；`stop_reason` 为 `refusal` 或 `max_tokens`、正文为空或 JSON 无效时降级并按
+实际 usage 结算。失败请求结算 $0。
+
+密钥只经 `settings.get_secret("ANTHROPIC_API_KEY")` 读取；缺失时不注册 provider，只记一条
+info 日志。`get_provider_status()` 增加 `claude`、`claude_model`、`claude_usage`（只有数字
+和状态）；`/health` 显示 Claude 状态、当日和本月用量；`scripts/healthcheck.py` 离线只报告
+已配置/未配置，`--live` 调一次 `models.retrieve`（不产生生成费用）。
 
 ### 4.3 Cooldown 与失败语义
 
@@ -329,6 +373,7 @@ description 不超过 3900 字符的 embed。精简不修改 sidecar envelope �
 - `<state-root>/data/personal_sources.json`：所有者的个人信源清单（无密钥），由 `/source_add`／`/source_remove` 原子写入；Git 忽略。
 - `<state-root>/data/news.sqlite3`：新闻原始素材／版本、专题结果、本期运行、订阅投递与模型预算；WAL同目录，Git忽略。
 - 旧 `data/news_cache.json`／`data/news_digest_history.json`：只作为显式迁移快照和回滚依据，不再由运行入口读写。
+- `<state-root>/data/claude_usage.json`：Claude 个人路由的用量、预留、停用与冷却状态（只有数字，无密钥），保留 40 天；Git 忽略。
 - `<state-root>/data/secrets.json`：slash command 保存的本地密钥，Git 忽略。
 - `/root/.config/discord-bot/runtime.env`：WSL canonical 私密配置；目录 0700、
   文件 0600，process-first，拒绝 symlink/unsafe mode；根 `.env` 仅在 canonical
