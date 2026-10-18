@@ -1,10 +1,13 @@
 import asyncio
+import datetime as dt
 import logging
 from typing import Any
 from urllib.parse import quote
 
 import aiohttp
 import discord
+
+from config import TZ
 
 logger = logging.getLogger(__name__)
 
@@ -371,22 +374,36 @@ async def fetch_weather_wttr(city: str, session: aiohttp.ClientSession, lang: st
     return embed
 
 
-async def fetch_weather_open_meteo(city: str, session: aiohttp.ClientSession, lang: str = "zh") -> discord.Embed:
-    search_query, display_label = resolve_city_name(city)
+class CityNotFoundError(ValueError):
+    """Open-Meteo geocoding returned no match for the requested city."""
+
+
+class ForecastRangeError(ValueError):
+    """Requested forecast dates are outside what Open-Meteo can serve."""
+
+
+async def _geocode_open_meteo(
+    city: str,
+    search_query: str,
+    session: aiohttp.ClientSession,
+    timeout: aiohttp.ClientTimeout,
+) -> tuple[float, float]:
     encoded_city = quote(search_query)
     geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={encoded_city}&count=1&language=en&format=json"
-    timeout = aiohttp.ClientTimeout(total=8)
-
     async with session.get(geo_url, timeout=timeout) as geo_resp:
         geo_resp.raise_for_status()
         geo_data = await geo_resp.json(content_type=None)
 
     results = geo_data.get("results")
     if not results:
-        raise ValueError(f"Open-Meteo 未检索到城市 '{city}'")
+        raise CityNotFoundError(f"Open-Meteo 未检索到城市 '{city}'")
+    return results[0]["latitude"], results[0]["longitude"]
 
-    lat = results[0]["latitude"]
-    lon = results[0]["longitude"]
+
+async def fetch_weather_open_meteo(city: str, session: aiohttp.ClientSession, lang: str = "zh") -> discord.Embed:
+    search_query, display_label = resolve_city_name(city)
+    timeout = aiohttp.ClientTimeout(total=8)
+    lat, lon = await _geocode_open_meteo(city, search_query, session, timeout)
 
     weather_url = (
         f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
@@ -521,6 +538,214 @@ async def fetch_weather_open_meteo(city: str, session: aiohttp.ClientSession, la
         inline=False,
     )
     embed.set_footer(text="数据来源: Open-Meteo (备用通道)")
+    return embed
+
+
+MAX_FORECAST_DAYS = 16
+FORECAST_DESCRIPTION_LIMIT = 4000
+WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+SNOW_CODES = frozenset({71, 73, 75, 77, 85, 86})
+FREEZING_CODES = frozenset({56, 57, 66, 67})
+THUNDER_CODES = frozenset({95, 96, 99})
+FORECAST_DAILY_FIELDS = (
+    "temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,"
+    "precipitation_probability_max,precipitation_sum,weathercode,windspeed_10m_max,uv_index_max"
+)
+
+
+def validate_forecast_range(date_from: dt.date, date_to: dt.date, today: dt.date) -> None:
+    """Raise ``ForecastRangeError`` unless the range fits Open-Meteo's 16-day horizon."""
+    if date_from > date_to:
+        raise ForecastRangeError("开始日期晚于结束日期")
+    if date_from < today:
+        raise ForecastRangeError("开始日期早于今天")
+    if (date_to - today).days >= MAX_FORECAST_DAYS:
+        raise ForecastRangeError(f"Open-Meteo 只提供未来 {MAX_FORECAST_DAYS} 天的预报")
+
+
+def _daily_value(daily: dict[str, Any], keys: tuple[str, ...], index: int) -> Any:
+    for key in keys:
+        values = daily.get(key)
+        if isinstance(values, list) and index < len(values):
+            return values[index]
+    return None
+
+
+def _round(value: Any) -> int | None:
+    try:
+        return round(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_temp(value: int | None) -> str:
+    return "?" if value is None else f"{value}"
+
+
+def _short_date(day: dt.date) -> str:
+    return f"{day.month}/{day.day}"
+
+
+def _forecast_day_line(day: dt.date, row: dict[str, Any]) -> str:
+    code = row["code"]
+    condition = WMO_CODES.get(code) if code is not None else None
+    condition = condition or translate_condition(None, "")
+    temp = f"{_fmt_temp(row['low'])}~{_fmt_temp(row['high'])}°C"
+    if row["feels_low"] is not None and row["feels_high"] is not None and (
+        row["feels_low"] != row["low"] or row["feels_high"] != row["high"]
+    ):
+        temp += f" (体感 {row['feels_low']}~{row['feels_high']}°C)"
+    precip_chance = "?" if row["precip_chance"] is None else f"{row['precip_chance']}%"
+    parts = [condition, temp, f"降水 {precip_chance} / {row['precip_sum']:.1f}mm"]
+    if row["wind"] is not None:
+        parts.append(f"风 {row['wind']} km/h")
+    return f"**{_short_date(day)} {WEEKDAY_NAMES[day.weekday()]}** · " + " · ".join(parts)
+
+
+def _join_days(days: list[dt.date]) -> str:
+    return "、".join(_short_date(day) for day in days)
+
+
+def _forecast_tips(rows: list[tuple[dt.date, dict[str, Any]]]) -> tuple[list[str], bool, bool]:
+    """Deterministic clothing/travel tips. Returns (tips, severe, wet)."""
+    tips: list[str] = []
+    severe = False
+    thunder = [d for d, r in rows if r["code"] in THUNDER_CODES]
+    freezing = [d for d, r in rows if r["code"] in FREEZING_CODES]
+    if freezing:
+        tips.append(f"⚠️ {_join_days(freezing)} 可能有冻雨，路面结冰湿滑，出行务必小心。")
+        severe = True
+    if thunder:
+        tips.append(f"⚠️ {_join_days(thunder)} 可能有雷暴，注意雷电与短时强降水。")
+        severe = True
+
+    lows = [r["feels_low"] if r["feels_low"] is not None else r["low"] for _, r in rows]
+    lows = [v for v in lows if v is not None]
+    highs = [r["feels_high"] if r["feels_high"] is not None else r["high"] for _, r in rows]
+    highs = [v for v in highs if v is not None]
+    if lows:
+        coldest = min(lows)
+        if coldest <= -20:
+            tips.append(f"🧣 最低体感 {coldest}°C，风寒刺骨，手套围巾帽子备齐。")
+            severe = severe or coldest <= -30
+        elif coldest < 5:
+            tips.append(f"🧥 最低体感 {coldest}°C，早晚偏冷，带厚外套注意添衣。")
+        elif coldest < 12:
+            tips.append(f"🧥 最低体感 {coldest}°C，早晚微凉，建议带件外套。")
+    if highs and max(highs) >= 32:
+        tips.append(f"🔥 最高体感 {max(highs)}°C，注意防暑补水。")
+        severe = severe or max(highs) >= 38
+
+    wet_days = [
+        d for d, r in rows
+        if (r["precip_chance"] or 0) > 50 or r["precip_sum"] > 1.5
+    ]
+    codes = {d: r["code"] for d, r in rows}
+    snowy = [d for d in wet_days if codes[d] in SNOW_CODES]
+    rainy = [d for d in wet_days if d not in snowy]
+    if rainy:
+        tips.append(f"☔ {_join_days(rainy)} 降水可能性较大，记得带伞。")
+    if snowy:
+        tips.append(f"❄️ {_join_days(snowy)} 可能有雪，路面湿滑，注意行车与步行安全。")
+
+    windy = [(d, r["wind"]) for d, r in rows if r["wind"] is not None and r["wind"] >= 40]
+    if windy:
+        peak = max(w for _, w in windy)
+        tips.append(f"💨 {_join_days([d for d, _ in windy])} 风力较大 (最高 {peak} km/h)，注意防风。")
+
+    sunny_uv = [(d, r["uv"]) for d, r in rows if r["uv"] is not None and r["uv"] >= 6]
+    if sunny_uv:
+        tips.append(f"🕶️ {_join_days([d for d, _ in sunny_uv])} 紫外线较强，外出注意防晒。")
+
+    if not tips:
+        tips.append("🌤️ 期间天气平稳，适合出行。")
+    return tips, severe, bool(wet_days)
+
+
+async def fetch_forecast_range(
+    city: str,
+    date_from: dt.date,
+    date_to: dt.date,
+    session: aiohttp.ClientSession,
+    *,
+    today: dt.date | None = None,
+    preface: str | None = None,
+) -> discord.Embed:
+    """Open-Meteo multi-day forecast for ``date_from..date_to`` (inclusive).
+
+    Raises ``ForecastRangeError`` for ranges outside the 16-day horizon, ``CityNotFoundError``
+    when geocoding has no match, and lets HTTP/timeout errors propagate to the caller.
+    """
+    if today is None:
+        today = dt.datetime.now(TZ).date()
+    validate_forecast_range(date_from, date_to, today)
+
+    search_query, display_label = resolve_city_name(city)
+    timeout = aiohttp.ClientTimeout(total=8)
+    lat, lon = await _geocode_open_meteo(city, search_query, session, timeout)
+
+    # The city's local "today" may be one day ahead of the bot's TZ; request one extra day.
+    forecast_days = min(MAX_FORECAST_DAYS, (date_to - today).days + 2)
+    weather_url = (
+        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+        f"&daily={FORECAST_DAILY_FIELDS}&timezone=auto&forecast_days={forecast_days}"
+    )
+    async with session.get(weather_url, timeout=timeout) as response:
+        response.raise_for_status()
+        data = await response.json(content_type=None)
+
+    daily = data["daily"]
+    rows: list[tuple[dt.date, dict[str, Any]]] = []
+    for index, raw_day in enumerate(daily["time"]):
+        day = dt.date.fromisoformat(str(raw_day))
+        if not date_from <= day <= date_to:
+            continue
+        code = _daily_value(daily, ("weathercode", "weather_code"), index)
+        precip_sum = _daily_value(daily, ("precipitation_sum",), index)
+        rows.append((day, {
+            "code": int(code) if code is not None else None,
+            "high": _round(_daily_value(daily, ("temperature_2m_max",), index)),
+            "low": _round(_daily_value(daily, ("temperature_2m_min",), index)),
+            "feels_high": _round(_daily_value(daily, ("apparent_temperature_max",), index)),
+            "feels_low": _round(_daily_value(daily, ("apparent_temperature_min",), index)),
+            "precip_chance": _round(_daily_value(daily, ("precipitation_probability_max",), index)),
+            "precip_sum": float(precip_sum) if precip_sum is not None else 0.0,
+            "wind": _round(_daily_value(daily, ("windspeed_10m_max", "wind_speed_10m_max"), index)),
+            "uv": _round(_daily_value(daily, ("uv_index_max",), index)),
+        }))
+    if not rows:
+        raise ValueError("Open-Meteo 返回的预报不含所请求日期")
+
+    head = [preface.strip()] if preface and preface.strip() else []
+    lines: list[str] = []
+    budget = FORECAST_DESCRIPTION_LIMIT - sum(len(h) + 2 for h in head) - 40
+    for position, (day, row) in enumerate(rows):
+        line = _forecast_day_line(day, row)
+        if sum(len(item) + 1 for item in lines) + len(line) > budget:
+            lines.append(f"…其余 {len(rows) - position} 天因 Discord 长度限制已截断")
+            break
+        lines.append(line)
+    requested_days = (date_to - date_from).days + 1
+    if len(rows) < requested_days:
+        lines.append(f"（Open-Meteo 仅返回 {len(rows)}/{requested_days} 天的数据）")
+
+    tips, severe, wet = _forecast_tips(rows)
+    if severe:
+        color = COLOR_SEVERE
+    elif wet:
+        color = COLOR_SNOW if any(r["code"] in SNOW_CODES for _, r in rows) else COLOR_RAIN
+    else:
+        color = COLOR_NICE
+
+    title_city = f"{display_label} ({search_query})" if display_label != search_query else search_query
+    span = _short_date(date_from) if date_from == date_to else f"{_short_date(date_from)}–{_short_date(date_to)}"
+    embed = discord.Embed(
+        title=f"📍 {title_city} {span} 天气预报",
+        description="\n\n".join(head + ["\n".join(lines)]),
+        color=discord.Color(color),
+    )
+    embed.add_field(name="💡 穿衣与出行", value="\n".join(tips)[:1024], inline=False)
+    embed.set_footer(text="数据来源: Open-Meteo")
     return embed
 
 
