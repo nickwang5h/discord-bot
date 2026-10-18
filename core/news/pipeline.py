@@ -20,8 +20,10 @@ MAX_RESULT_CHARS = 24000
 # Sized for the smallest free provider (Groq qwen: 7000 input tokens per minute) so every
 # topic can be selected without Claude. Override with NEWS_LIMITS.free_chain_input_tokens.
 FREE_CHAIN_INPUT_TOKEN_LIMIT = 6500
-# When even this many candidates do not fit, keep them anyway; larger providers still answer.
-MIN_FIT_CANDIDATES = 5
+# Candidates outrank history: shrink candidates to this floor first, then history.
+MIN_FIT_CANDIDATES = 12
+MIN_FIT_HISTORY = 10
+HISTORY_KEYS = ('recently_delivered', 'already_recommended')
 
 
 def estimate_tokens(prepared):
@@ -30,25 +32,51 @@ def estimate_tokens(prepared):
     return estimate_input_tokens(prepared.system, raw)
 
 
-def fit_token_budget(prepared, limit, rebuild=None, *, minimum=MIN_FIT_CANDIDATES):
-    """Drop candidates from the tail until the estimate fits; never truncate one candidate.
-
-    `rebuild(n)` re-prepares with at most n candidates (personal topics re-rank at the
-    smaller size); without it the prepared order is cut. Result: the largest count that
-    fits, or the first `minimum` candidates when nothing smaller than that fits.
-    """
-    if estimate_tokens(prepared) <= limit or len(prepared.candidates) <= minimum:
-        return prepared
-    rebuild = rebuild or (lambda count: trim_candidates(prepared, count))
-    low, high, best = minimum, len(prepared.candidates) - 1, None
-    while low <= high:  # the estimate grows with the count, so bisect
+def _largest_fit(low, high, build, limit):
+    """Largest n in [low, high] whose build(n) fits (the estimate grows with n), else None."""
+    best = None
+    while low <= high:
         middle = (low + high) // 2
-        candidate = rebuild(middle)
+        candidate = build(middle)
         if estimate_tokens(candidate) <= limit:
             best, low = candidate, middle + 1
         else:
             high = middle - 1
-    return best if best is not None else rebuild(minimum)
+    return best
+
+
+def trim_history(prepared, count):
+    """Keep the newest `count` history entries (topics list them newest first)."""
+    data = dict(prepared.data)
+    for key in HISTORY_KEYS:
+        if isinstance(data.get(key), list):
+            data[key] = data[key][:count]
+    return dataclasses.replace(prepared, data=data)
+
+
+def fit_token_budget(prepared, limit, rebuild=None, *, minimum=MIN_FIT_CANDIDATES,
+                     history_minimum=MIN_FIT_HISTORY):
+    """Fit the free-chain input budget; never truncate a single candidate or history entry.
+
+    1. Drop candidates from the tail down to the largest count that fits, but not below
+       `minimum`. `rebuild(n)` re-prepares with at most n candidates (personal topics re-rank
+       at the smaller size); without it the prepared order is cut.
+    2. If `minimum` candidates still do not fit, drop the oldest history entries instead,
+       down to `history_minimum`. Whatever remains is sent; larger providers still answer.
+    """
+    if estimate_tokens(prepared) <= limit:
+        return prepared
+    if len(prepared.candidates) > minimum:
+        rebuild = rebuild or (lambda count: trim_candidates(prepared, count))
+        best = _largest_fit(minimum, len(prepared.candidates) - 1, rebuild, limit)
+        if best is not None:
+            return best
+        prepared = rebuild(minimum)
+    history = max((len(prepared.data.get(key) or []) for key in HISTORY_KEYS), default=0)
+    if history <= history_minimum:
+        return prepared
+    best = _largest_fit(history_minimum, history - 1, lambda count: trim_history(prepared, count), limit)
+    return best if best is not None else trim_history(prepared, history_minimum)
 
 
 class NewsPipeline:
@@ -88,13 +116,17 @@ class NewsPipeline:
         prepared = prepare(subscription)
         if not prepared.candidates:
             return None
-        before, tokens = len(prepared.candidates), estimate_tokens(prepared)
+        def history_size(slate):
+            return max((len(slate.data.get(key) or []) for key in HISTORY_KEYS), default=0)
+
+        before, history_before, tokens = len(prepared.candidates), history_size(prepared), estimate_tokens(prepared)
         # Personal ranking reserves board/exploration slots, so it re-ranks at the smaller size.
         rebuild = (lambda count: prepare(dataclasses.replace(subscription, max_candidates=count))) if personal else None
         prepared = fit_token_budget(prepared, self.input_tokens, rebuild)
-        if len(prepared.candidates) != before:
-            logger.info('新闻 %s 输入约 %d token 超过 %d，候选 %d → %d（约 %d token）', subscription.id, tokens,
-                        self.input_tokens, before, len(prepared.candidates), estimate_tokens(prepared))
+        if tokens > self.input_tokens:
+            logger.info('新闻 %s 输入约 %d token 超过 %d：候选 %d → %d，历史 %d → %d（约 %d token）',
+                        subscription.id, tokens, self.input_tokens, before, len(prepared.candidates),
+                        history_before, history_size(prepared), estimate_tokens(prepared))
         # Include history and scope: selection is contextual, not a universal article summary.
         key = fingerprint([topic.name, topic.version, subscription.params, subscription.source_groups,
                            subscription.max_candidates, subscription.max_output_tokens, prepared.data,

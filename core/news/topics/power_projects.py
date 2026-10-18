@@ -77,7 +77,7 @@ class PowerProjectsTopic:
             '只选指定国家的具体项目新规划、审批、采购、授标或相关新政策，不做行业泛谈或广告。'
             '原文发布时间不等于项目发生时间；旧项目必须有具体新增事实，不能把刚采集当新项目。'
             '同一项目换媒体、改标题不是新进展；比较 recently_delivered，事实未变则跳过。'
-            'project 使用原文中的明确项目/政策名称，同一项目沿用历史中的名称（必须也出现在本条原文）；'
+            'project 使用原文中的明确项目/政策名称，同一项目若历史 title 中有名称则沿用（必须也出现在本条原文）；'
             '不能用国家、行业或整个公司代替项目名称。actor/location/equipment 缺失用 null，禁止猜测。'
             'country 为国家代码；country_quote 是本条明确国家依据的原文短句。'
             'stage 只用 planning/procurement/awarded/policy；stage_quote 必须是本次进展的原文证据。'

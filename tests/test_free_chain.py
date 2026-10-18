@@ -15,6 +15,7 @@ from core.news.models import Article, SelectionInput, Subscription, lenient_item
 from core.news.pipeline import (
     FREE_CHAIN_INPUT_TOKEN_LIMIT,
     MIN_FIT_CANDIDATES,
+    MIN_FIT_HISTORY,
     NewsPipeline,
     estimate_tokens,
     fit_token_budget,
@@ -86,13 +87,58 @@ class TokenBudgetTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertLessEqual(len(calls), 6)  # bisection, not one prepare per candidate
 
-    def test_history_keeps_one_copy_of_duplicated_evidence(self):
-        same, different = public_history([
-            {'title': 'A', 'content': 'x' * 900, 'rss_summary': 'x' * 600, 'topic_result': {}},
-            {'title': 'B', 'content': 'full text', 'rss_summary': 'short', 'topic_result': {}}])
-        self.assertEqual(same['content'], 'x' * 600)
-        self.assertNotIn('rss_summary', same)
-        self.assertEqual(different['rss_summary'], 'short')
+    def test_history_is_compacted_to_the_newest_thirty_titles(self):
+        history = [{'title': f'Story {i}', 'rss_summary': f'  Summary {i} ' + 'x' * 300, 'content': 'long ' * 200,
+                    'publisher': 'BBC', 'url': f'https://e.example/{i}', 'delivered_at': float(i),
+                    'topic_result': {'project': 'P', 'digest_summary': '模型摘要'}} for i in range(35)]
+        history.append({'title': 'Only title', 'delivered_at': 100.0})
+        history.append({'title': '', 'rss_summary': 'no title', 'delivered_at': 101.0})
+        compact = public_history(history)
+        self.assertEqual(len(compact), 30)  # newest 30 with a title
+        self.assertEqual(compact[0], {'title': 'Only title'})
+        self.assertEqual(compact[1]['title'], 'Story 34')
+        self.assertEqual(compact[-1]['title'], 'Story 6')
+        self.assertTrue(all(set(entry) <= {'title', 'summary'} for entry in compact))
+        self.assertTrue(compact[1]['summary'].startswith('Summary 34 '))
+        self.assertEqual(len(compact[1]['summary']), 100)
+        self.assertEqual(public_history([{'title': 'T', 'content': 'body', 'delivered_at': 1}]),
+                         [{'title': 'T', 'summary': 'body'}])
+
+    def test_every_topic_sends_the_compact_history(self):
+        history = [{'title': f'Old {i}', 'rss_summary': 'r' * 400, 'content': 'c' * 900, 'publisher': 'BBC',
+                    'category': 'World', 'url': f'https://old.example/{i}', 'delivered_at': NOW - i,
+                    'evidence_hash': 'h', 'topic_result': {}} for i in range(40)]
+        articles = [article('Src', i) for i in range(3)]
+        for name, key in [('general', 'recently_delivered'), ('discovery', 'already_recommended'),
+                          ('following', 'already_recommended'), ('power_projects', 'recently_delivered')]:
+            with self.subTest(topic=name):
+                topic = TOPICS[name]
+                sub = Subscription(name, name, ('general',), ('08:00',), 1,
+                                   {'countries': ['CA']} if name == 'power_projects' else {})
+                slate = topic.prepare(articles, sub, history, '早间')
+                self.assertEqual(len(slate.data[key]), 30)
+                self.assertEqual(slate.data[key][0], {'title': 'Old 0', 'summary': 'r' * 100})
+
+    def test_history_is_cut_only_after_candidates_reach_the_floor(self):
+        def slate(candidates, history):
+            base = prepared(candidates)
+            base.data['recently_delivered'] = [{'title': f'Old {i}', 'summary': 'y' * 100} for i in range(history)]
+            return base
+
+        # Candidates first: a budget that fits 20 candidates with full history keeps all history.
+        fitted = fit_token_budget(slate(30, 30), estimate_tokens(slate(20, 30)))
+        self.assertEqual((len(fitted.candidates), len(fitted.data['recently_delivered'])), (20, 30))
+        # At the candidate floor, history shrinks from the oldest end instead.
+        fitted = fit_token_budget(slate(30, 30), estimate_tokens(slate(MIN_FIT_CANDIDATES, 18)))
+        self.assertEqual(len(fitted.candidates), MIN_FIT_CANDIDATES)
+        self.assertEqual(fitted.data['recently_delivered'], slate(1, 18).data['recently_delivered'])
+        # Nothing fits: keep the candidate floor and the history floor.
+        fitted = fit_token_budget(slate(30, 30), 10)
+        self.assertEqual((len(fitted.candidates), len(fitted.data['recently_delivered'])),
+                         (MIN_FIT_CANDIDATES, MIN_FIT_HISTORY))
+        # Few candidates: none are dropped, history still yields.
+        fitted = fit_token_budget(slate(8, 30), estimate_tokens(slate(8, 14)))
+        self.assertEqual((len(fitted.candidates), len(fitted.data['recently_delivered'])), (8, 14))
 
     def test_limit_is_configurable_and_bounded(self):
         store = SimpleNamespace()

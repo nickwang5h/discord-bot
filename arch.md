@@ -314,12 +314,21 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 免费链输入预算：Claude 额度不保证每月都有，所以每个专题都必须能只靠免费链出刊。
 `pipeline.FREE_CHAIN_INPUT_TOKEN_LIMIT`（默认 6500 估算 token，`NEWS_LIMITS.free_chain_input_tokens`
 可调 2000–30000）按最小 provider（Groq 7000/分钟）留余量。专题 `prepare` 之后，若 system＋候选 JSON
-的估算超过上限，`fit_token_budget` 二分找出能放下的最大候选数，从尾部整条去掉候选（不截断单条，
-id 编号不变）；共享专题直接截取已排好序/交错的前 n 条，个人专题用 `max_candidates=n` 重新 `prepare`，
-让画像排序的板块保底和探索名额在小规模下仍成立。连 5 条都放不下时保留前 5 条照常调用（更大的
-provider 仍可回答，Groq 由上面的分钟账本跳过）。following 原有的 30,000 字符上限保留，两者取严。
-历史上下文不裁剪；`public_history` 在 `rss_summary` 与 `content` 相同时（`bind_evidence` 的默认值）只留
-一份。综合新闻的 `recently_delivered` 最多 60 条，历史多时会占去大半预算、把候选压到下限。
+的估算超过上限，`fit_token_budget` 分两步、都不截断单条：先二分找出能放下的最大候选数，从尾部整条
+去掉候选（id 编号不变），最低保留 12 条；共享专题直接截取已排好序/交错的前 n 条，个人专题用
+`max_candidates=n` 重新 `prepare`，让画像排序的板块保底和探索名额在小规模下仍成立。12 条候选仍放不下
+时，改从历史最旧的一端去条目，最少留 10 条；再放不下就按 12 条候选＋10 条历史照常调用（更大的
+provider 仍可回答，Groq 由上面的分钟账本跳过）。候选永远比历史优先。following 原有的 30,000 字符
+上限保留，两者取严。
+
+发给模型的历史（综合新闻 `recently_delivered`、视野拾遗/following `already_recommended`、电力
+`recently_delivered`）统一由 `models.public_history` 压成防重复用的最小形态：按投递时间倒序取最近
+30 条有标题的投递，每条只有 `title`（原文标题）和至多 100 字符的 `summary`（原始 RSS 摘要，无则用原文
+内容，都没有就省略该键），不含发布方、分类、投递时间、模型结果或其他字段。各专题的 `validate`、
+同链接“新进展：”要求和投递去重只用原始历史里的 URL（以及 store 里的投递身份），不依赖发给模型的
+历史摘要；综合新闻 `prepare` 过滤未变化候选时用的是 store 原始历史的 `evidence_hash`/`rss_summary`，
+同样不受压缩影响。电力提示词改为“同一项目若历史 title 中有名称则沿用”，不再提供历史里模型提取的
+项目名。
 
 免费模型输出宽容规则（`models.lenient_items`，四个专题共用）：顶层与条目里的多余字段忽略、不进入
 结果；可选字段缺失、为 null 或空白按空处理（视野拾遗/following 的 `why_read` 为空串，卡片省略

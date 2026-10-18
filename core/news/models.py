@@ -63,21 +63,29 @@ def bind_evidence(candidates, articles):
     return candidates
 
 
-def public_history(history):
-    """History is comparison context, never a candidate's factual evidence."""
-    result, size = [], 0
-    for item in history:
-        entry = {key: value[:600] if isinstance(value, str) else value
-                 for key, value in item.items()
-                 if key in {'title', 'content', 'rss_summary', 'publisher', 'category', 'delivered_at'}}
-        if entry.get('rss_summary') == entry.get('content'):
-            # bind_evidence defaults rss_summary to content[:600]: the same text twice is pure token cost.
-            entry.pop('rss_summary', None)
-        entry['previous_result'] = {key: value for key, value in item.get('topic_result', {}).items()
-                                    if key in {'project', 'country', 'stage', 'event_date', 'new_fact'}}
-        size += len(json.dumps(entry, ensure_ascii=False))
-        if size > 12000:
+MAX_HISTORY_ITEMS = 30
+MAX_HISTORY_SUMMARY_CHARS = 100
+
+
+def public_history(history, limit=MAX_HISTORY_ITEMS):
+    """Minimal anti-repeat context for the model: newest `limit` deliveries, each only the
+    original title plus at most 100 characters of raw RSS summary (title alone when none).
+
+    History is comparison context, never a candidate's factual evidence; validators and the
+    “新进展：” rule use the raw history's URLs, not this. Model results are never included.
+    """
+    ordered = sorted(history, key=lambda item: -float(item.get('delivered_at') or 0))
+    result = []
+    for item in ordered:
+        title = ' '.join(str(item.get('title') or '').split())
+        if not title:
+            continue
+        if len(result) == limit:
             break
+        summary = ' '.join(str(item.get('rss_summary') or item.get('content') or '').split())
+        entry = {'title': title}
+        if summary:
+            entry['summary'] = summary[:MAX_HISTORY_SUMMARY_CHARS]
         result.append(entry)
     return result
 

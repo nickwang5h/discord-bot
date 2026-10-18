@@ -16,6 +16,7 @@ from core.news.models import (
     fingerprint,
     lenient_items,
     public_candidate,
+    public_history,
 )
 from core.utils import create_ai_embed
 
@@ -26,7 +27,6 @@ MAX_SOURCE_URL_CHARS = 280
 MAX_SECTION_DESCRIPTION_CHARS = 3_800
 MAX_SELECTION_TOTAL_COST = 5_200
 MAX_MESSAGE_EMBED_CHARS = 5_800
-MAX_HISTORY_CONTEXT_ITEMS = 60
 MAX_ITEMS_PER_PUBLISHER = 3
 CATEGORY_LABELS = {
     "World": "🌍 国际要闻",
@@ -314,19 +314,7 @@ class GeneralTopic:
             {**public_candidate(candidate), "render_cost": _estimated_render_cost(candidate)}
             for candidate in candidates
         ]
-        history_context = [
-            {
-                "title": item["title"],
-                "publisher": item["publisher"],
-                "category": item["category"],
-                "rss_summary": item["rss_summary"],
-                "delivered_at": datetime.datetime.fromtimestamp(
-                    float(item["delivered_at"]),
-                    datetime.UTC,
-                ).isoformat(),
-            }
-            for item in history[:MAX_HISTORY_CONTEXT_ITEMS]
-        ]
+        history_context = public_history(history)
         data = {
                 "edition": edition,
                 "max_items_per_publisher": MAX_ITEMS_PER_PUBLISHER,
