@@ -70,6 +70,9 @@ def public_history(history):
         entry = {key: value[:600] if isinstance(value, str) else value
                  for key, value in item.items()
                  if key in {'title', 'content', 'rss_summary', 'publisher', 'category', 'delivered_at'}}
+        if entry.get('rss_summary') == entry.get('content'):
+            # bind_evidence defaults rss_summary to content[:600]: the same text twice is pure token cost.
+            entry.pop('rss_summary', None)
         entry['previous_result'] = {key: value for key, value in item.get('topic_result', {}).items()
                                     if key in {'project', 'country', 'stage', 'event_date', 'new_fact'}}
         size += len(json.dumps(entry, ensure_ascii=False))
@@ -82,3 +85,10 @@ def public_history(history):
 def public_candidate(candidate):
     return {key: value for key, value in candidate.items()
             if not key.startswith('_') and key not in {'url', 'cache_url', 'evidence_hash'}}
+
+
+def trim_candidates(prepared, count):
+    """The first `count` candidates in prepared (model) order, with their public entries."""
+    data = {**prepared.data, 'candidates': prepared.data['candidates'][:count]}
+    return SelectionInput(prepared.candidates[:count], data, prepared.system)
+

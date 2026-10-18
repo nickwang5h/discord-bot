@@ -1,13 +1,15 @@
 """One bounded path for every topic, with persistent send intent and per-subscription locks."""
 import asyncio
+import dataclasses
 import datetime
 import json
 import logging
 
 from core import ai_client
+from core.claude_budget import estimate_input_tokens
 from core.jobs import RetryPolicy, run_delivery_job
 from core.news.ingest import Ingester
-from core.news.models import Edition, fingerprint
+from core.news.models import Edition, fingerprint, trim_candidates
 from core.news.sources import sources_for
 from core.news.subscriptions import bounded_int, edition_name
 from core.news.topics import TOPICS
@@ -15,6 +17,38 @@ from core.news.topics import TOPICS
 logger = logging.getLogger(__name__)
 MAX_INPUT_CHARS = 60000
 MAX_RESULT_CHARS = 24000
+# Sized for the smallest free provider (Groq qwen: 7000 input tokens per minute) so every
+# topic can be selected without Claude. Override with NEWS_LIMITS.free_chain_input_tokens.
+FREE_CHAIN_INPUT_TOKEN_LIMIT = 6500
+# When even this many candidates do not fit, keep them anyway; larger providers still answer.
+MIN_FIT_CANDIDATES = 5
+
+
+def estimate_tokens(prepared):
+    """Conservative system + user estimate (CJK 1.5 token/char, other 1 token/3 chars)."""
+    raw = json.dumps(prepared.data, ensure_ascii=False, separators=(',', ':'))
+    return estimate_input_tokens(prepared.system, raw)
+
+
+def fit_token_budget(prepared, limit, rebuild=None, *, minimum=MIN_FIT_CANDIDATES):
+    """Drop candidates from the tail until the estimate fits; never truncate one candidate.
+
+    `rebuild(n)` re-prepares with at most n candidates (personal topics re-rank at the
+    smaller size); without it the prepared order is cut. Result: the largest count that
+    fits, or the first `minimum` candidates when nothing smaller than that fits.
+    """
+    if estimate_tokens(prepared) <= limit or len(prepared.candidates) <= minimum:
+        return prepared
+    rebuild = rebuild or (lambda count: trim_candidates(prepared, count))
+    low, high, best = minimum, len(prepared.candidates) - 1, None
+    while low <= high:  # the estimate grows with the count, so bisect
+        middle = (low + high) // 2
+        candidate = rebuild(middle)
+        if estimate_tokens(candidate) <= limit:
+            best, low = candidate, middle + 1
+        else:
+            high = middle - 1
+    return best if best is not None else rebuild(minimum)
 
 
 class NewsPipeline:
@@ -26,11 +60,14 @@ class NewsPipeline:
         self.ingester = Ingester(store)
         self.locks = {}
         limits = {} if limits is None else limits
-        if not isinstance(limits, dict) or set(limits) - {'concurrency', 'daily_calls', 'daily_output_tokens'}:
+        if not isinstance(limits, dict) or set(limits) - {'concurrency', 'daily_calls', 'daily_output_tokens',
+                                                          'free_chain_input_tokens'}:
             raise ValueError('NEWS_LIMITS 配置无效')
         self.model_slots = asyncio.Semaphore(bounded_int(limits.get('concurrency', 2), 1, 2))
         self.max_calls = bounded_int(limits.get('daily_calls', 24), 1, 48)
         self.max_tokens = bounded_int(limits.get('daily_output_tokens', 72000), 3000, 144000)
+        self.input_tokens = bounded_int(limits.get('free_chain_input_tokens', FREE_CHAIN_INPUT_TOKEN_LIMIT),
+                                        2000, 30000)
 
     async def build(self, subscription, period, *, preview=False):
         topic = self.topics[subscription.topic]
@@ -42,12 +79,22 @@ class NewsPipeline:
             articles = [a for a in articles if not self.store.seen(subscription.id, {'url': a.url, '_version': a.version})]
         personal = getattr(topic, 'personal', False)
         profile = await self._profile(subscription) if personal else None
-        if personal:
-            prepared = topic.prepare(articles, subscription, history, edition_name(period), profile=profile)
-        else:
-            prepared = topic.prepare(articles, subscription, history, edition_name(period))
+
+        def prepare(scope):
+            if personal:
+                return topic.prepare(articles, scope, history, edition_name(period), profile=profile)
+            return topic.prepare(articles, scope, history, edition_name(period))
+
+        prepared = prepare(subscription)
         if not prepared.candidates:
             return None
+        before, tokens = len(prepared.candidates), estimate_tokens(prepared)
+        # Personal ranking reserves board/exploration slots, so it re-ranks at the smaller size.
+        rebuild = (lambda count: prepare(dataclasses.replace(subscription, max_candidates=count))) if personal else None
+        prepared = fit_token_budget(prepared, self.input_tokens, rebuild)
+        if len(prepared.candidates) != before:
+            logger.info('新闻 %s 输入约 %d token 超过 %d，候选 %d → %d（约 %d token）', subscription.id, tokens,
+                        self.input_tokens, before, len(prepared.candidates), estimate_tokens(prepared))
         # Include history and scope: selection is contextual, not a universal article summary.
         key = fingerprint([topic.name, topic.version, subscription.params, subscription.source_groups,
                            subscription.max_candidates, subscription.max_output_tokens, prepared.data,

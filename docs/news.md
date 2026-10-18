@@ -53,10 +53,10 @@ ID 是持久投递身份。改频道、规则版本或范围不会清空历史�
 `NEWS_LIMITS` 控制新闻子系统共享的资源上限，加载入口时读取，修改后需重载入口：
 
 ```json
-{"concurrency": 2, "daily_calls": 24, "daily_output_tokens": 72000}
+{"concurrency": 2, "daily_calls": 24, "daily_output_tokens": 72000, "free_chain_input_tokens": 6500}
 ```
 
-并发最多2；每天逻辑生成调用最多48，输出 token 预留总量最多144000。每次生成（包括预览、失败和 build 重试）均持久化预留整次 `max_output_tokens`，跨重启不恢复额度。单次配置范围256–3000；输入最多60000字符，模型响应最多24000字符，整次调用超时180秒。日期按 UTC 结算。这里计量的是 `generate_ai` 逻辑调用和输出上限，不是账单：provider 内部 fallback 可能尝试多个模型，不声明精确累计计费 token。
+`free_chain_input_tokens`（默认6500，范围2000–30000）是每次选编的估算输入上限（system＋候选 JSON；中日韩1.5 token/字、其他1 token/3字符），按最小的免费 provider（Groq Qwen 每分钟7000输入 token）定，超出时从尾部整条减少候选，最少保留5条，见 `arch.md` §6。并发最多2；每天逻辑生成调用最多48，输出 token 预留总量最多144000。每次生成（包括预览、失败和 build 重试）均持久化预留整次 `max_output_tokens`，跨重启不恢复额度。单次配置范围256–3000；输入最多60000字符，模型响应最多24000字符，整次调用超时180秒。日期按 UTC 结算。这里计量的是 `generate_ai` 逻辑调用和输出上限，不是账单：provider 内部 fallback 可能尝试多个模型，不声明精确累计计费 token。
 
 ## 数据与专题边界
 
