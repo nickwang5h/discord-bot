@@ -10,11 +10,36 @@ from discord.ext import commands, tasks
 from config import SCHEDULED_JOBS_ENABLED, TZ
 from core import settings
 from core.jobs import run_delivery_job
-from core.weather import build_morning_weather_embeds, get_weather_embed
+from core.weather import (
+    COLOR_SEVERE,
+    MAX_FORECAST_DAYS,
+    CityNotFoundError,
+    build_morning_weather_embeds,
+    fetch_forecast_range,
+    get_weather_embed,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CITIES = ["Ottawa", "Sudbury"]
+
+
+async def _multi_day_embed(city: str, days: int, session: aiohttp.ClientSession) -> discord.Embed:
+    today = datetime.datetime.now(TZ).date()
+    try:
+        return await fetch_forecast_range(
+            city, today, today + datetime.timedelta(days=days - 1), session, today=today
+        )
+    except CityNotFoundError:
+        description = f"找不到城市「{city}」，请换个写法（如英文名）再试。"
+    except Exception as error:
+        logger.error("城市 %s 多日预报获取失败: %s", city, error)
+        description = f"Open-Meteo 多日预报暂不可用: {error}"
+    return discord.Embed(
+        title=f"📍 {city} 天气获取失败",
+        description=description,
+        color=discord.Color(COLOR_SEVERE),
+    )
 
 
 class Weather(commands.Cog):
@@ -77,12 +102,23 @@ class Weather(commands.Cog):
         await self.bot.wait_until_ready()
 
     @app_commands.command(name="weather", description="查询指定城市天气 (默认 Ottawa)")
-    @app_commands.describe(city="城市名称，例如 Ottawa, Sudbury, Toronto, Beijing")
-    async def weather(self, interaction: discord.Interaction, city: str = "Ottawa"):
+    @app_commands.describe(
+        city="城市名称，例如 Ottawa, Sudbury, Toronto, Beijing",
+        days=f"从今天起的预报天数 (1-{MAX_FORECAST_DAYS})，大于 1 时显示多日预报",
+    )
+    async def weather(
+        self,
+        interaction: discord.Interaction,
+        city: str = "Ottawa",
+        days: app_commands.Range[int, 1, MAX_FORECAST_DAYS] = 1,
+    ):
         await interaction.response.defer()
         target_city = city.strip() or "Ottawa"
         async with aiohttp.ClientSession() as session:
-            embed = await get_weather_embed(target_city, session)
+            if days > 1:
+                embed = await _multi_day_embed(target_city, days, session)
+            else:
+                embed = await get_weather_embed(target_city, session)
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="test_weather", description="[管理员] 立即测试天气播报")

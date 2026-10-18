@@ -327,5 +327,49 @@ class ForecastRangeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("天因 Discord 长度限制已截断", embed.description)
 
 
+class WeatherCommandDaysTests(unittest.IsolatedAsyncioTestCase):
+    async def _invoke(self, days, fetch_range, single):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from cogs.weather import Weather
+
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        cog = Weather.__new__(Weather)
+        with patch.dict(
+            Weather.weather.callback.__globals__,
+            {"fetch_forecast_range": fetch_range, "get_weather_embed": single},
+        ):
+            if days is None:
+                await Weather.weather.callback(cog, interaction, "Toronto")
+            else:
+                await Weather.weather.callback(cog, interaction, "Toronto", days)
+        return interaction.followup.send.await_args.kwargs["embed"]
+
+    async def test_default_days_keeps_single_day_path(self):
+        from unittest.mock import AsyncMock
+
+        single = AsyncMock(return_value=discord.Embed(title="today"))
+        fetch_range = AsyncMock(side_effect=AssertionError("no multi-day"))
+        embed = await self._invoke(None, fetch_range, single)
+        self.assertEqual(embed.title, "today")
+
+    async def test_days_above_one_uses_range_and_reports_unknown_city(self):
+        from unittest.mock import AsyncMock
+
+        fetch_range = AsyncMock(return_value=discord.Embed(title="range"))
+        single = AsyncMock(side_effect=AssertionError("no single-day"))
+        self.assertEqual((await self._invoke(5, fetch_range, single)).title, "range")
+        date_from, date_to = fetch_range.await_args.args[1:3]
+        self.assertEqual((date_to - date_from).days, 4)
+
+        fetch_range = AsyncMock(side_effect=CityNotFoundError("x"))
+        embed = await self._invoke(3, fetch_range, single)
+        self.assertIn("找不到城市", embed.description)
+
+
 if __name__ == "__main__":
     unittest.main()
