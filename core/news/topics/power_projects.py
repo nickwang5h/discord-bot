@@ -23,7 +23,8 @@ COUNTRIES = {
     'IT': r'\b(?:Italy|Italian)\b',
     'ES': r'\b(?:Spain|Spanish)\b',
 }
-POWER = re.compile(r'\b(?:electricity|electric|power|grid|substation|transformer|transmission|nuclear|hydroelectric)\b', re.IGNORECASE)
+# Plurals count: "new substations", "grids" and "transformers" are the same evidence.
+POWER = re.compile(r'\b(?:electricity|electric|power|grids?|substations?|transformers?|transmission|nuclear|hydroelectric)\b', re.IGNORECASE)
 STAGES = {
     'planning': r'\b(?:plan(?:ned|ning|s)?|propos(?:ed|al)|approv(?:ed|al)|permit)\b',
     'procurement': r'\b(?:tender|bids? invited|request for proposals|seeking bids|procurement opened)\b',
