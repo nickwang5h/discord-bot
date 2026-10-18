@@ -325,7 +325,21 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 3. 解析今日高低温、体感、紫外线、降水概率、降水量、明日预报与基于天气状况的智能出行提醒（烟尘、雷暴、冻雨、大雪等警报）；
 4. 格式化为 Discord Embed，根据严重警报、下雪、降雨、多云、晴朗匹配视觉色彩，并保留数据来源 Footer。
 
-`cogs.weather` 在每日 07:00 (`America/Toronto`) 通过 `core.jobs.run_delivery_job` 发送预设城市（默认 `Ottawa, Sudbury`）的早间天气播报至 `WEATHER_CHANNEL_ID`（未指定时降级至 `NEWS_CHANNEL_ID`）。同时提供 `/weather [city]` 交互式查询命令，及 `set_weather_channel` / `/test_weather` 管理员配置与测试入口。
+`cogs.weather` 在每日 07:00 (`America/Toronto`) 通过 `core.jobs.run_delivery_job` 发送预设城市（默认 `Ottawa, Sudbury`）的早间天气播报至 `WEATHER_CHANNEL_ID`（未指定时降级至 `NEWS_CHANNEL_ID`）。同时提供 `/weather [city] [days]` 交互式查询命令，及 `set_weather_channel` / `/test_weather` 管理员配置与测试入口。
+
+多日预报 `core.weather.fetch_forecast_range(city, date_from, date_to, session)` 只走 Open-Meteo
+（geocoding 复用单日备用通道的 `_geocode_open_meteo()`，8 秒超时）：
+
+- 本地先校验范围：`date_from ≤ date_to`、不早于今天（`config.TZ`）、结束日距今天 < 16 天，否则抛
+  `ForecastRangeError`，不发请求；geocoding 无结果抛 `CityNotFoundError`；HTTP/超时错误原样抛给调用方。
+- 请求 `daily=temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,`
+  `precipitation_probability_max,precipitation_sum,weathercode,windspeed_10m_max,uv_index_max&timezone=auto`，
+  `forecast_days = min(16, 结束日-今天+2)`（多一天容纳城市时区领先于 Bot 时区的情况），按 `daily.time` 切片。
+- Embed 标题 `📍 <城市> M/D–M/D 天气预报`，description 每天一行（日期+星期、WMO 天气状况、高低温与体感、
+  降水概率/量、最大风速），超过 4000 字符时按天截断并注明；字段“💡 穿衣与出行”是确定性规则
+  （冻雨/雷暴警报、最低体感分档添衣、降水>50% 或 >1.5mm 带伞/雪天路滑、风 ≥40 km/h、UV ≥6、体感 ≥32°C）；
+  页脚 `数据来源: Open-Meteo`。
+- `/weather days>1` 以今天为起点调用它；`days` 缺省或为 1 时仍走 wttr.in → Open-Meteo 单日卡片。
 
 ## 6.6 游戏特惠与 Epic 喜加一监控
 
@@ -421,6 +435,20 @@ Wikipedia 请求从 WSL canonical `/root/.config/discord-bot/runtime.env` 或部
 截短回答而保留链接；模型未引用任何编号时保底显示前三条。单一抓取源失败只记录 warning，
 其他来源仍可完成回答。Google News 偶尔会按服务端策略缩减 RSS 条目，此时机器人只使用
 实际返回的证据，不通过主题特判补造结果。
+
+**默认模式的天气意图**（`cogs.ask._build_ask_reply`，两个联网模式不经过）：
+
+1. 确定性初筛：问题含 `WEATHER_KEYWORDS_ZH`（天气、预报、气温、下雨、下雪、降水、穿什么等）或
+   英文整词 `WEATHER_KEYWORDS_EN`（weather、forecast、rain、snow、temperature、wind 等）才继续；
+   否则路径与原来逐字节一致（`ask_ai(question, system=SYSTEM_PROMPT, use_search=False)`）。
+2. 槽位抽取：`generate_ai(json_mode=True, max_output_tokens=200)`，不传 `route`（共享功能，只走免费链），
+   `asyncio.wait_for` 10 秒。system 给出今天日期，输出 `{intent, city, date_from, date_to}`。本地
+   `parse_weather_slots()` 严格校验 ISO 日期与 16 天预报窗口；两端都为 null 时默认今天到后天，一端为 null
+   视为单日；问题未写月份而模型给出已过去的日子时，按同日顺延一个月（“最近的将来”）后再校验。任何
+   不合法、`intent=other`、模型失败/超时都静默退回普通问答。
+3. 命中时直接发送 `fetch_forecast_range()` 的 Embed，description 第一行为 `❓ 提问: …`；city 为 null 时按
+   `Ottawa` 并注明“未指明城市，按 Ottawa”。模型不写正文，页脚为数据来源而非 `Powered by`。城市找不到时
+   显示明确的“找不到城市”文本；Open-Meteo 其他失败时退回普通问答，并在回答前加“天气数据暂不可用”一行。
 
 ### 7.2 指定链接总结
 

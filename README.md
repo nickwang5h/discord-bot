@@ -7,7 +7,7 @@
 - 按能力路由：`/ask` 可选普通 Qwen、Qwen 双语网页检索或 Gemini 原生搜索；默认使用低成本 Qwen。
 - 低成本新闻：RSS/Hacker News 负责事实输入；综合新闻覆盖国际、加拿大、财经和科技与 AI，按独立信息增量伸缩，不用固定条数凑版面。国际加入 NPR、Al Jazeera，科技使用 Ars Technica、TechCrunch；保留 BBC 等原有源，同一媒体每期最多 3 条，多源不等于绝对中立。
 - 稳定日报：抓取与生成可以重试，Discord 发送至多一次；并发触发会自动跳过。
-- 准时天气：每日早晨 07:00 定时推送多城市双通道（wttr.in + Open-Meteo 备用）天气预报与出行建议，支持 `/weather` 交互查询。
+- 准时天气：每日早晨 07:00 定时推送多城市双通道（wttr.in + Open-Meteo 备用）天气预报与出行建议，支持 `/weather [city] [days]` 交互查询（`days` 1–16 为 Open-Meteo 多日预报）；`/ask` 默认模式识别天气类提问并直接返回真实多日预报卡片。
 - 游戏折扣与限免：周四 11:30 定时推送 Epic 每周限时免费游戏，每日 13:30 监控 Steam 愿望单降价与历史史低（零 Token 消耗），支持 `/epic_free`、`/deal` 与愿望单管理。
 - 格式兜底：模型生成的 Markdown 表格会自动转换为 Discord 可读的项目符号。
 - 安全链接总结：限制网页大小、请求时间和重定向次数；B站完整 BV 链接由隔离的 Info Curator sidecar 生成带时间引用的完整总结。Discord 展示层隐藏仅供审计的 `引用/seg-*` 行，并将剩余长内容无截断地拆成多个编号 embed。
