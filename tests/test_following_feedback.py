@@ -189,21 +189,20 @@ class TagAndPostProcessTests(unittest.TestCase):
         self.assertEqual(clean_tags(['  Nvidia ', 'ＯＰＧ', 'nvidia', '芯片', '第四个']), ['Nvidia', 'OPG', '芯片'])
         self.assertEqual(clean_tags(['x', '超过十二个字的一个很长的标签', 'https://a.b', '**粗体**', '[链接](u)', 3]), [])
         self.assertEqual(clean_tags([]), [])
-        with self.assertRaises(ValueError):
-            clean_tags('芯片')
+        # tags is optional: a non-list is treated as no tags, not a failed edition.
+        self.assertEqual(clean_tags('芯片'), [])
 
-    def test_following_output_accepts_tags_and_discovery_does_not(self):
+    def test_following_output_accepts_tags_and_discovery_ignores_them(self):
         candidates = _prepare_candidates(raw_items([article('Alpha', 1)]))
         text = json.dumps({'items': [{**item('R01', tags=['芯片', 'http://x'])}]}, ensure_ascii=False)
         selected = _normalize_recommendations(text, candidates, with_tags=True)
         self.assertEqual(selected[0]['tags'], ['芯片'])
-        with self.assertRaises(ValueError):
-            _normalize_recommendations(text, candidates)
+        # Free-model leniency: unknown fields are dropped, never copied into the result.
+        self.assertNotIn('tags', _normalize_recommendations(text, candidates)[0])
         untagged = json.dumps({'items': [{k: v for k, v in item('R01', tags=[]).items() if k != 'tags'}]})
         self.assertEqual(_normalize_recommendations(untagged, candidates, with_tags=True)[0]['tags'], [])
         extra = json.dumps({'items': [{**item('R01', tags=[]), 'score': 1}]})
-        with self.assertRaises(ValueError):
-            _normalize_recommendations(extra, candidates, with_tags=True)
+        self.assertNotIn('score', _normalize_recommendations(extra, candidates, with_tags=True)[0])
 
     def test_strong_skip_dropped_known_moved_last(self):
         profile = tag_profile()

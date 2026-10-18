@@ -1,6 +1,5 @@
 """Evidence-first power project updates, not a search for installed-base buyers."""
 import datetime
-import json
 import re
 
 import discord
@@ -9,6 +8,7 @@ from core.news.models import (
     SelectionInput,
     bind_evidence,
     fingerprint,
+    lenient_items,
     public_candidate,
     public_history,
 )
@@ -30,6 +30,10 @@ STAGES = {
     'awarded': r'\b(?:awarded|contract signed|selected supplier|secured a contract)\b',
     'policy': r'\b(?:policy|regulation|legislation|mandate|tariff)\b',
 }
+MAX_ITEMS = 4
+REQUIRED_FIELDS = ('id', 'title', 'summary', 'project', 'country', 'country_quote', 'stage', 'stage_quote',
+                   'new_fact')
+OPTIONAL_FIELDS = ('actor', 'location', 'equipment', 'event_date')
 LABELS = {'planning': '规划／审批（不代表采购）', 'procurement': '公开采购',
           'awarded': '已授标／签约（不是待采购）', 'policy': '政策（不代表具体项目采购）'}
 
@@ -93,16 +97,12 @@ class PowerProjectsTopic:
                               'recently_delivered': public_history(history)}, system)
 
     def validate(self, text, candidates, subscription, history):
-        payload = json.loads(text)
-        if not isinstance(payload, dict) or set(payload) != {'items'} or not isinstance(payload['items'], list) or len(payload['items']) > 4:
-            raise ValueError('电力结果结构无效')
+        # Optional evidence fields default to null ("原文未提供"); the rest must be quoted.
+        items = lenient_items(text, label='电力', max_items=MAX_ITEMS, required=REQUIRED_FIELDS,
+                              optional=dict.fromkeys(OPTIONAL_FIELDS))
         by_id = {c['id']: c for c in candidates}
         selected, seen, identities = [], set(), set()
-        fields = {'id', 'title', 'summary', 'project', 'actor', 'location', 'equipment', 'country',
-                  'country_quote', 'stage', 'stage_quote', 'event_date', 'new_fact'}
-        for item in payload['items']:
-            if not isinstance(item, dict) or set(item) != fields:
-                raise ValueError('电力条目字段无效')
+        for item in items:
             identity = item['id']
             if not isinstance(identity, str) or identity not in by_id or identity in seen:
                 raise ValueError('电力候选引用无效')
@@ -115,7 +115,7 @@ class PowerProjectsTopic:
                     raise ValueError('电力中文展示字段无效')
             for key in ('project', 'actor', 'location', 'equipment', 'country_quote', 'stage_quote', 'event_date', 'new_fact'):
                 value = item[key]
-                if value is None and key in {'actor', 'location', 'equipment', 'event_date'}:
+                if value is None and key in OPTIONAL_FIELDS:
                     continue
                 if (not isinstance(value, str) or not value.strip() or len(value) > 240 or value not in evidence
                         or re.search(r'https?://|[<>]', value, re.IGNORECASE)):

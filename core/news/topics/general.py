@@ -14,6 +14,7 @@ from core.news.models import (
     SelectionInput,
     bind_evidence,
     fingerprint,
+    lenient_items,
     public_candidate,
 )
 from core.utils import create_ai_embed
@@ -191,12 +192,8 @@ def _normalize_selection(
     model_text: str,
     candidates: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    payload = json.loads(model_text)
-    if not isinstance(payload, dict) or set(payload) != {"items"}:
-        raise ValueError("新闻摘要模型输出结构无效")
-    items = payload["items"]
-    if not isinstance(items, list) or len(items) > len(candidates):
-        raise ValueError("新闻摘要模型选择列表无效")
+    items = lenient_items(model_text, label="新闻摘要模型", max_items=len(candidates),
+                          required=("id", "title", "summary"))
 
     candidates_by_id = {str(item["id"]): item for item in candidates}
     selected: list[dict[str, object]] = []
@@ -204,9 +201,7 @@ def _normalize_selection(
     publisher_counts: dict[str, int] = {}
     for item in items:
         if (
-            not isinstance(item, dict)
-            or set(item) != {"id", "title", "summary"}
-            or not isinstance(item["id"], str)
+            not isinstance(item["id"], str)
             or not isinstance(item["title"], str)
             or not isinstance(item["summary"], str)
         ):

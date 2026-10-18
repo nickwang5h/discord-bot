@@ -92,3 +92,27 @@ def trim_candidates(prepared, count):
     data = {**prepared.data, 'candidates': prepared.data['candidates'][:count]}
     return SelectionInput(prepared.candidates[:count], data, prepared.system)
 
+
+def lenient_items(text, *, label, max_items, required, optional=None):
+    """Tolerate what free models get deterministically wrong, nothing factual (arch §6).
+
+    Unknown keys (top level and per item) are ignored; a missing, null or blank optional
+    field becomes its default; a list longer than `max_items` is cut in model order. A
+    missing required field, a non-object item or a non-list `items` stays invalid, and every
+    topic keeps its own id, evidence, link and length checks on what remains.
+    """
+    payload = json.loads(text)
+    if not isinstance(payload, dict) or not isinstance(payload.get('items'), list):
+        raise ValueError(f'{label}输出结构无效')
+    optional = optional or {}
+    result = []
+    for item in payload['items'][:max_items]:
+        if not isinstance(item, dict) or not set(required) <= set(item):
+            raise ValueError(f'{label}条目字段无效')
+        clean = {key: item[key] for key in required}
+        for key, default in optional.items():
+            value = item.get(key)
+            missing = value is None or (isinstance(value, str) and not value.strip())
+            clean[key] = (list(default) if isinstance(default, list) else default) if missing else value
+        result.append(clean)
+    return result

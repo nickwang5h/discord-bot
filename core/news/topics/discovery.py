@@ -15,6 +15,7 @@ from core.news.models import (
     SelectionInput,
     bind_evidence,
     fingerprint,
+    lenient_items,
     public_candidate,
     public_history,
 )
@@ -130,10 +131,10 @@ def _drop_repeats(articles, history):
 
 
 def clean_tags(value):
-    """Model tags: a list; keep up to three distinct 2–12 character phrases (NFKC), dropping
-    anything that looks like a URL or Markdown. Bad entries are dropped, not fatal."""
+    """Model tags: keep up to three distinct 2–12 character phrases (NFKC), dropping anything
+    that looks like a URL or Markdown. Bad entries (or a non-list) are dropped, not fatal."""
     if not isinstance(value, list):
-        raise ValueError("tags 必须是列表")
+        return []  # Optional field: a malformed tag list is the same as no tags.
     tags, seen = [], set()
     for tag in value:
         if not isinstance(tag, str):
@@ -150,26 +151,28 @@ def clean_tags(value):
     return tags
 
 
+REQUIRED_FIELDS = {"title": 40, "summary": 160}
+OPTIONAL_FIELDS = {"why_read": 120}  # Missing/blank: the card omits the line.
+
+
 def _normalize_recommendations(text, candidates, *, with_tags=False):
-    payload = json.loads(text)
-    if not isinstance(payload, dict) or set(payload) != {"items"}:
-        raise ValueError("探索阅读输出必须是 items 对象")
-    items = payload["items"]
-    if not isinstance(items, list) or len(items) > MAX_RECOMMENDATIONS:
-        raise ValueError("探索阅读条目数量无效")
+    optional = {field: "" for field in OPTIONAL_FIELDS}
+    if with_tags:
+        optional["tags"] = []
+    items = lenient_items(text, label="探索阅读", max_items=MAX_RECOMMENDATIONS,
+                          required=("id", *REQUIRED_FIELDS), optional=optional)
     by_id = {item["id"]: item for item in candidates}
     selected, seen = [], set()
-    limits = {"title": 40, "summary": 160, "why_read": 120}
     for item in items:
-        fields = {"id", *limits}
-        if not isinstance(item, dict) or not (set(item) == fields or (with_tags and set(item) == fields | {"tags"})):
-            raise ValueError("探索阅读条目字段无效")
         identity = item["id"]
         if not isinstance(identity, str) or identity not in by_id or identity in seen:
             raise ValueError("探索阅读引用未知或重复条目")
         rendered = {}
-        for field, limit in limits.items():
+        for field, limit in {**REQUIRED_FIELDS, **OPTIONAL_FIELDS}.items():
             value = item[field]
+            if field in OPTIONAL_FIELDS and value == "":
+                rendered[field] = ""
+                continue
             if (not isinstance(value, str) or not value.strip() or len(value) > limit
                     or re.search(r"https?://|<|>", value, re.IGNORECASE)):
                 raise ValueError("探索阅读文本无效或过长")
@@ -178,7 +181,7 @@ def _normalize_recommendations(text, candidates, *, with_tags=False):
                 raise ValueError("探索阅读需要中文表达")
             rendered[field] = value
         if with_tags:
-            rendered["tags"] = clean_tags(item.get("tags", []))
+            rendered["tags"] = clean_tags(item["tags"])
         selected.append({**by_id[identity], **rendered})
         seen.add(identity)
     return selected
@@ -196,8 +199,8 @@ def _render_recommendations(items, intro=DISCOVERY_INTRO, *, numbered=False):
         blocks.append(
             f"{mark}**[{plain(item['title'])}]({item['url']})**\n"
             f"{plain(item['summary'])}\n"
-            f"**值得一读**：{plain(item['why_read'])}\n"
-            f"— {plain(item['publisher'])} · {date}"
+            + (f"**值得一读**：{plain(item['why_read'])}\n" if item.get("why_read") else "")
+            + f"— {plain(item['publisher'])} · {date}"
         )
     body = intro + "\n\n" + "\n\n".join(blocks)
     if len(body) > MAX_DESCRIPTION_CHARS:
