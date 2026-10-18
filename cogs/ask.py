@@ -1,12 +1,16 @@
+import asyncio
 import json
 import logging
-from datetime import datetime
+import re
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 
+import aiohttp
 import discord
 from discord.ext import commands
 
 from config import TZ
-from core import ai_client, web_search
+from core import ai_client, web_search, weather
 from core.ai_providers import AIResult
 from core.utils import create_ai_embed
 
@@ -109,6 +113,164 @@ async def _answer_question(question: str, *, mode: str) -> str:
     return AIResult(grounded_answer, result.provider, result.model).as_legacy_text()
 
 
+# --- Weather intent (default Qwen mode only) ---------------------------------
+# Deterministic pre-filter: only questions containing one of these reach slot extraction.
+WEATHER_KEYWORDS_ZH = (
+    "天气", "预报", "气温", "温度", "下雨", "下雪", "降雨", "降雪", "降水", "雨伞", "带伞",
+    "刮风", "大风", "风力", "风速", "穿什么", "穿多少", "冷不冷", "热不热",
+)
+WEATHER_KEYWORDS_EN = ("weather", "forecast", "rain", "rainy", "snow", "snowy", "temperature", "wind", "windy")
+_WEATHER_EN_RE = re.compile(r"\b(?:" + "|".join(WEATHER_KEYWORDS_EN) + r")\b", re.IGNORECASE)
+# An explicit month in the question disables the "nearest future month" correction.
+_EXPLICIT_MONTH_RE = re.compile(
+    r"\d{1,2}\s*月|\d{1,2}\s*/\s*\d{1,2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b",
+    re.IGNORECASE,
+)
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+WEATHER_DEFAULT_CITY = "Ottawa"
+WEATHER_SLOT_TIMEOUT_SECONDS = 10.0
+WEATHER_SLOT_MAX_TOKENS = 200
+WEATHER_UNAVAILABLE_NOTICE = "⚠️ 天气数据暂不可用，以下为普通问答："
+WEATHER_SLOT_SYSTEM_PROMPT = (
+    "You extract slots from a user's question for a weather lookup. Do not answer the question.\n"
+    "Today's date is {today} ({weekday}).\n"
+    'Return JSON only: {{"intent":"weather"|"other","city":string|null,'
+    '"date_from":"YYYY-MM-DD"|null,"date_to":"YYYY-MM-DD"|null}}\n'
+    "Rules:\n"
+    "- intent is \"weather\" only when the user wants a weather forecast/conditions "
+    "(temperature, rain, snow, wind, what to wear). Otherwise \"other\" and null for the rest.\n"
+    "- city: the place asked about, in English if it is a well-known city (e.g. 多伦多 -> Toronto); "
+    "null if no place is mentioned.\n"
+    "- A day number without a month means the nearest such day that is today or in the future.\n"
+    "- A range like \"19-21日\" means date_from is the 19th and date_to is the 21st.\n"
+    "- A single day such as \"明天\" sets date_from and date_to to that same day.\n"
+    "- No date mentioned: date_from is today and date_to is the day after tomorrow."
+)
+
+
+@dataclass(frozen=True)
+class WeatherSlots:
+    city: str | None
+    date_from: date
+    date_to: date
+
+
+def is_weather_question(question: str) -> bool:
+    return any(keyword in question for keyword in WEATHER_KEYWORDS_ZH) or bool(
+        _WEATHER_EN_RE.search(question)
+    )
+
+
+def _parse_iso_date(value: object) -> date | None:
+    if not isinstance(value, str) or not _ISO_DATE_RE.match(value.strip()):
+        raise ValueError(f"bad date {value!r}")
+    return date.fromisoformat(value.strip())
+
+
+def _next_month_same_day(day: date) -> date:
+    year, month = (day.year + 1, 1) if day.month == 12 else (day.year, day.month + 1)
+    return day.replace(year=year, month=month)  # ValueError when the day does not exist
+
+
+def parse_weather_slots(raw: str, *, today: date, question: str) -> WeatherSlots | None:
+    """Strictly validate the extractor JSON. ``None`` means "treat as other"."""
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or payload.get("intent") != "weather":
+            return None
+        city = payload.get("city")
+        if city is not None:
+            if not isinstance(city, str):
+                return None
+            city = " ".join(city.split())[:80] or None
+        raw_from, raw_to = payload.get("date_from"), payload.get("date_to")
+        if raw_from is None and raw_to is None:
+            date_from, date_to = today, today + timedelta(days=2)
+        else:
+            date_from = _parse_iso_date(raw_from if raw_from is not None else raw_to)
+            date_to = _parse_iso_date(raw_to if raw_to is not None else raw_from)
+        # "19-21日" without a month must be the nearest future occurrence; correct a model
+        # that anchored it to an already-past day of the current month.
+        if date_from < today and not _EXPLICIT_MONTH_RE.search(question):
+            date_from, date_to = _next_month_same_day(date_from), _next_month_same_day(date_to)
+        weather.validate_forecast_range(date_from, date_to, today)
+    except (ValueError, TypeError) as error:
+        logger.info("天气槽位无效，按普通问答处理: %s", error)
+        return None
+    return WeatherSlots(city=city, date_from=date_from, date_to=date_to)
+
+
+async def _extract_weather_slots(question: str, today: date) -> WeatherSlots | None:
+    system = WEATHER_SLOT_SYSTEM_PROMPT.format(
+        today=today.isoformat(), weekday=today.strftime("%A")
+    )
+    try:
+        result = await asyncio.wait_for(
+            ai_client.generate_ai(
+                f"User question: {question.strip()[:500]}",
+                system=system,
+                use_search=False,
+                json_mode=True,
+                max_output_tokens=WEATHER_SLOT_MAX_TOKENS,
+            ),
+            timeout=WEATHER_SLOT_TIMEOUT_SECONDS,
+        )
+    except Exception as error:  # timeout, AIServiceUnavailable, anything else: silent fallback
+        logger.warning("天气槽位抽取失败，按普通问答处理: %s", error)
+        return None
+    return parse_weather_slots(result.text, today=today, question=question)
+
+
+def _question_line(question: str) -> str:
+    text = " ".join(question.split())
+    return f"❓ 提问: {text[:200]}{'…' if len(text) > 200 else ''}"
+
+
+async def _weather_reply(question: str) -> discord.Embed | str | None:
+    """Embed when answered with forecast data; notice text to prepend on data failure;
+    ``None`` to fall through to the unchanged ordinary answer."""
+    today = datetime.now(TZ).date()
+    slots = await _extract_weather_slots(question, today)
+    if slots is None:
+        return None
+    city = slots.city or WEATHER_DEFAULT_CITY
+    preface = _question_line(question)
+    if slots.city is None:
+        preface += f"\n📌 未指明城市，按 {WEATHER_DEFAULT_CITY}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            return await weather.fetch_forecast_range(
+                city, slots.date_from, slots.date_to, session, today=today, preface=preface
+            )
+    except weather.CityNotFoundError:
+        return discord.Embed(
+            title=_question_line(question)[:256],
+            description=f"⚠️ 找不到城市「{city}」，请换个写法（如英文名）再试。",
+            color=discord.Color.orange(),
+        ).set_footer(text="数据来源: Open-Meteo")
+    except Exception as error:
+        logger.warning("Open-Meteo 多日预报失败，回退普通问答: %s", error)
+        return WEATHER_UNAVAILABLE_NOTICE
+
+
+async def _build_ask_reply(question: str, mode: str) -> discord.Embed:
+    notice = None
+    if mode == ASK_MODE_QWEN and is_weather_question(question):
+        reply = await _weather_reply(question)
+        if isinstance(reply, discord.Embed):
+            return reply
+        notice = reply
+
+    answer = await _answer_question(question, mode=mode)
+    if notice:
+        answer = f"{notice}\n\n{answer}"
+    return create_ai_embed(
+        title=f"❓ 提问: {question}",
+        description=answer,
+        color=discord.Color.green()
+    )
+
+
 class Ask(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -124,14 +286,7 @@ class Ask(commands.Cog):
         mode: str = ASK_MODE_QWEN,
     ):
         await interaction.response.defer()
-        answer = await _answer_question(question, mode=mode)
-
-        embed = create_ai_embed(
-            title=f"❓ 提问: {question}",
-            description=answer,
-            color=discord.Color.green()
-        )
-
+        embed = await _build_ask_reply(question, mode)
         await interaction.followup.send(embed=embed)
 
 async def setup(bot):
