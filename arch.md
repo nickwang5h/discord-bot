@@ -215,7 +215,9 @@ Gemini 出现 `429` 或 `RESOURCE_EXHAUSTED` 时记录服务级 cooldown。冷�
 
 所有请求默认限制 4096 个输出 token。综合新闻选择和视野拾遗选编分别限制为 3000 输出 token；探索阅读每期最多 40 条候选，每条 RSS 证据最多 600 字符，只进行一次模型选编，不再每小时打分或二次改写。综合新闻另外受 Discord 单次消息 embed 总字符预算约束。
 
-OpenAI-compatible provider 的超时覆盖整个候选模型池，而不是每个模型重新计时；HTTP 413 会直接终止该 provider 的模型轮询，因为相同 payload 不会因切换模型而缩小。
+OpenAI-compatible provider 的超时覆盖整个候选模型池，而不是每个模型重新计时；HTTP 413 会直接终止该 provider 的模型轮询，因为相同 payload 不会因切换模型而缩小（同一次调用里不会再向 Groq 重发，直接进入智谱）。provider 总超时：Groq 20 秒、智谱 30 秒、OpenRouter 60 秒（免费 Nemotron 处理约 6–8k 输入＋3000 输出常超过 25 秒），加 Gemini offline 30 秒，免费链最坏 140 秒，落在新闻 180 秒总超时内。
+
+Groq 免费档按模型限制每分钟输入 token（`qwen/qwen3.8-27b` 为 7000，跨请求累计；单次超过即 413，累计超过即 429）。`ai_client` 在进程内维护滚动 60 秒的输入 token 账（`claude_budget.estimate_input_tokens` 的保守估算，含 system，在发请求前记账，所有 Groq 调用共用）：窗口内已有请求且加上本次会超过 7000 时，本次直接跳过 Groq 进入智谱，不去拿注定的 413/429；窗口为空时单个请求总会尝试。账本只在本进程内，重启清零，不是 Groq 端精确计量。
 
 ## 5. 定时任务事务
 
@@ -255,7 +257,10 @@ SQLite 状态、通用选编／投递流程、公开订阅配置。`topics/` 显
 作为其他专题的证据。采集并不按疑似事件合并媒体链接。SQLite 当前素材最多3000条、
 原始版本最多6000条，保留7天。专题分别控制候选量：综合新闻8个来源每发布方4条、
 最多36条；视野拾遗9个来源交错最多40条、最多5条推荐；电力专题最多40候选、4条结果。
-未提供发布时间不会用采集时间冒充新发布，电力专题在此情况下保守跳过。
+未提供发布时间不会用采集时间冒充新发布，电力专题在此情况下保守跳过。电力专题的候选
+过滤是确定性正则：原文含电力关键词（含 grids/substations/transformers 复数）且明确出现所选
+国家名（US/United States/American、Canada/Canadian）；来源是综合与视野拾遗的大众媒体 RSS，
+真正的项目里程碑稀少，多数期次合理地为空。
 
 公开配置继续使用 `core.settings` / `JsonStore`，默认综合新闻08:45／15:30投递到
 `NEWS_CHANNEL_ID`，视野拾遗08:00／18:00投递到 `TEST_NEWS_CHANNEL_ID`；新增
@@ -305,6 +310,25 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 每份订阅独立加锁，定时运行互不等待；全新闻共享模型并发（默认2）、UTC日逻辑调用额度
 （默认24次）和输出token预留（默认72000）。单次最多3000输出token，180秒总超时，
 不把 provider 内部 fallback 计量冒充精确账单。没有候选不调用模型，空选稿不发送。
+
+免费链输入预算：Claude 额度不保证每月都有，所以每个专题都必须能只靠免费链出刊。
+`pipeline.FREE_CHAIN_INPUT_TOKEN_LIMIT`（默认 6500 估算 token，`NEWS_LIMITS.free_chain_input_tokens`
+可调 2000–30000）按最小 provider（Groq 7000/分钟）留余量。专题 `prepare` 之后，若 system＋候选 JSON
+的估算超过上限，`fit_token_budget` 二分找出能放下的最大候选数，从尾部整条去掉候选（不截断单条，
+id 编号不变）；共享专题直接截取已排好序/交错的前 n 条，个人专题用 `max_candidates=n` 重新 `prepare`，
+让画像排序的板块保底和探索名额在小规模下仍成立。连 5 条都放不下时保留前 5 条照常调用（更大的
+provider 仍可回答，Groq 由上面的分钟账本跳过）。following 原有的 30,000 字符上限保留，两者取严。
+历史上下文不裁剪；`public_history` 在 `rss_summary` 与 `content` 相同时（`bind_evidence` 的默认值）只留
+一份。综合新闻的 `recently_delivered` 最多 60 条，历史多时会占去大半预算、把候选压到下限。
+
+免费模型输出宽容规则（`models.lenient_items`，四个专题共用）：顶层与条目里的多余字段忽略、不进入
+结果；可选字段缺失、为 null 或空白按空处理（视野拾遗/following 的 `why_read` 为空串，卡片省略
+“值得一读”行；following 的 `tags` 为 `[]`，非列表也按 `[]`；电力的 actor/location/equipment/event_date
+为 null，显示“原文未提供”）；条数超过上限（综合新闻=候选数、视野拾遗/following 5、电力 4）按模型
+返回顺序截断，只校验保留的部分。不放宽的部分：`items` 必须是列表、条目必须是对象，核心字段
+（id、title、summary；电力另有 project、country、country_quote、stage、stage_quote、new_fact）缺失即
+整批无效；id 必须来自候选且不重复、链接只由程序按候选绑定、长度/中文/URL/Markdown 检查、电力
+逐字引文与阶段/地区依据、同链接“新进展：”要求都不变。
 
 正式发布仍复用 `run_delivery_job`，只重试构建、只调用一次 `channel.send`。新闻额外
 持久化本期运行键和发送意图：发送成功后事务记录消息 ID；超时、取消或记账失败进入
