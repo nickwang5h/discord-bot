@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import anthropic
@@ -12,6 +13,7 @@ from google.genai import types
 from config import get_env
 from core import claude_budget, settings
 from core.ai_providers import AIResult, ModelSpec, ProviderError, request_openai_compatible
+from core.claude_budget import estimate_input_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,18 @@ OPENROUTER_MODELS = [
     ModelSpec("nvidia/nemotron-3-ultra-550b-a55b:free", supports_json=False),
     ModelSpec("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
 ]
+
+# Provider-wide time budgets (each covers that provider's whole model pool). Free chain
+# worst case: 20 + 30 + 60 + Gemini 30 = 140 s, inside the news pipeline's 180 s cap.
+GROQ_TIMEOUT_SECONDS = 20
+ZHIPU_TIMEOUT_SECONDS = 30
+OPENROUTER_TIMEOUT_SECONDS = 60
+# Groq free tier: qwen/qwen3.8-27b allows 7000 input tokens per minute, counted across
+# requests. A second request that would overflow the rolling minute skips Groq (→ Zhipu)
+# instead of collecting a 413/429; a lone request is always tried (413 is instant).
+GROQ_INPUT_TOKENS_PER_MINUTE = 7000
+GROQ_WINDOW_SECONDS = 60.0
+_groq_input_window: deque[tuple[float, int]] = deque()
 
 CLAUDE_MODEL = "claude-opus-5-5"
 CLAUDE_TIMEOUT_SECONDS = 90.0
@@ -178,6 +192,18 @@ async def _ask_gemini(
     return AIResult(content, "Gemini", _gemini_model())
 
 
+def _reserve_groq_input(tokens: int, now: float | None = None) -> bool:
+    """Admit a Groq request into the in-process rolling-minute input-token ledger."""
+    now = time.monotonic() if now is None else now
+    while _groq_input_window and now - _groq_input_window[0][0] >= GROQ_WINDOW_SECONDS:
+        _groq_input_window.popleft()
+    used = sum(count for _, count in _groq_input_window)
+    if _groq_input_window and used + tokens > GROQ_INPUT_TOKENS_PER_MINUTE:
+        return False
+    _groq_input_window.append((now, tokens))
+    return True
+
+
 async def _ask_groq(
     text: str,
     system: str,
@@ -187,6 +213,11 @@ async def _ask_groq(
     api_key = settings.get_secret("GROQ_API_KEY")
     if not api_key:
         raise ProviderError("未配置 GROQ_API_KEY")
+    estimate = estimate_input_tokens(system, text)
+    if not _reserve_groq_input(estimate):
+        raise ProviderError(
+            f"本分钟输入 token 预计超过 {GROQ_INPUT_TOKENS_PER_MINUTE}（本次约 {estimate}），跳过 Groq"
+        )
     return await request_openai_compatible(
         provider="Groq",
         endpoint="https://api.groq.com/openai/v1/chat/completions",
@@ -195,7 +226,7 @@ async def _ask_groq(
         text=text,
         system=system,
         json_mode=json_mode,
-        timeout_seconds=20,
+        timeout_seconds=GROQ_TIMEOUT_SECONDS,
         max_output_tokens=max_output_tokens,
         token_limit_field="max_completion_tokens",
     )
@@ -218,7 +249,7 @@ async def _ask_zhipu(
         text=text,
         system=system,
         json_mode=json_mode,
-        timeout_seconds=25,
+        timeout_seconds=ZHIPU_TIMEOUT_SECONDS,
         max_output_tokens=max_output_tokens,
         extra_payload={"thinking": {"type": "disabled"}},
     )
@@ -247,7 +278,7 @@ async def _ask_openrouter(
         text=text,
         system=system,
         json_mode=json_mode,
-        timeout_seconds=25,
+        timeout_seconds=OPENROUTER_TIMEOUT_SECONDS,
         max_output_tokens=max_output_tokens,
     )
 
