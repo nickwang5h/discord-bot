@@ -311,6 +311,13 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 （默认24次）和输出token预留（默认72000）。单次最多3000输出token，180秒总超时，
 不把 provider 内部 fallback 计量冒充精确账单。没有候选不调用模型，空选稿不发送。
 
+空选稿软失败：候选 ≥ 10（`pipeline.MIN_CANDIDATES_FOR_EMPTY_RETRY`）时，模型返回格式正确但为空的
+`{"items":[]}` 视为软失败（2026-10-19 Groq qwen 曾在 33/21 个候选时返回空，导致整期跳过）。
+`generate_ai(soft_reject=...)` 把该结果暂存、记 warning，然后换链中下一个 provider（Claude → Groq →
+智谱 → OpenRouter → Gemini 的下一个能回答的节点；provider 内部的模型轮换不算）重试一次，下一个回答
+无论是否为空都采用；后面没有 provider 能回答时采用暂存的空结果，不把整次调用变成失败。候选少于 10
+时空列表直接接受（电力专题常态）。每次运行最多多一次免费调用，不额外占用新闻日调用额度。
+
 免费链输入预算：Claude 额度不保证每月都有，所以每个专题都必须能只靠免费链出刊。
 `pipeline.FREE_CHAIN_INPUT_TOKEN_LIMIT`（默认 6500 估算 token，`NEWS_LIMITS.free_chain_input_tokens`
 可调 2000–30000）按最小 provider（Groq 7000/分钟）留余量。专题 `prepare` 之后，若 system＋候选 JSON

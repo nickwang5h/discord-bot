@@ -24,6 +24,31 @@ FREE_CHAIN_INPUT_TOKEN_LIMIT = 6500
 MIN_FIT_CANDIDATES = 12
 MIN_FIT_HISTORY = 10
 HISTORY_KEYS = ('recently_delivered', 'already_recommended')
+# With at least this many candidates an empty selection is treated as a soft failure: the
+# provider chain tries the next provider once and accepts empty only if that is empty too.
+MIN_CANDIDATES_FOR_EMPTY_RETRY = 10
+
+
+def is_empty_selection(text):
+    """True for a well-formed reply that selects nothing, e.g. {"items": []}."""
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get('items') == []
+
+
+def empty_selection_check(candidate_count, label='新闻'):
+    """The `soft_reject` predicate for generate_ai, or None when few candidates make empty plausible."""
+    if candidate_count < MIN_CANDIDATES_FOR_EMPTY_RETRY:
+        return None
+
+    def reject(text):
+        if is_empty_selection(text):
+            logger.warning('%s 模型在 %d 个候选中返回空选择，视为软失败', label, candidate_count)
+            return True
+        return False
+    return reject
 
 
 def estimate_tokens(prepared):
@@ -147,7 +172,8 @@ class NewsPipeline:
                 routing = {'route': topic.route, 'json_schema': topic.json_schema} if personal else {}
                 async with asyncio.timeout(180):
                     result = await ai_client.generate_ai(raw, system=prepared.system, use_search=False,
-                        json_mode=True, max_output_tokens=subscription.max_output_tokens, **routing)
+                        json_mode=True, max_output_tokens=subscription.max_output_tokens,
+                        soft_reject=empty_selection_check(len(prepared.candidates), f'新闻 {subscription.id}'), **routing)
                 text, attribution = result.text, result.attribution
         if not isinstance(text, str) or len(text) > MAX_RESULT_CHARS:
             raise ValueError('新闻模型结果超过容量')

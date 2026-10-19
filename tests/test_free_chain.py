@@ -16,9 +16,12 @@ from core.news.pipeline import (
     FREE_CHAIN_INPUT_TOKEN_LIMIT,
     MIN_FIT_CANDIDATES,
     MIN_FIT_HISTORY,
+    MIN_CANDIDATES_FOR_EMPTY_RETRY,
     NewsPipeline,
+    empty_selection_check,
     estimate_tokens,
     fit_token_budget,
+    is_empty_selection,
 )
 from core.news.topics import TOPICS
 from core.news.topics.discovery import (
@@ -352,6 +355,131 @@ class GroqLedgerTests(unittest.IsolatedAsyncioTestCase):
                  + ai_client.OPENROUTER_TIMEOUT_SECONDS + 30)  # Gemini offline
         self.assertLessEqual(total, 150)
         self.assertGreaterEqual(ai_client.OPENROUTER_TIMEOUT_SECONDS, 45)
+
+
+class EmptySelectionRetryTests(unittest.IsolatedAsyncioTestCase):
+    """An empty selection over many candidates is a soft failure: one retry on the next provider."""
+    EMPTY = '{"items":[]}'
+    FULL = '{"items":[{"id":"R01"}]}'
+
+    def setUp(self):
+        ai_client._groq_input_window.clear()
+        self.calls = []
+
+    def tearDown(self):
+        ai_client._groq_input_window.clear()
+
+    def chain(self, answers):
+        """Patch the compatible providers; `answers[provider]` is text or an exception."""
+        async def compatible(**kwargs):
+            provider = kwargs['provider']
+            self.calls.append(provider)
+            answer = answers[provider]
+            if isinstance(answer, Exception):
+                raise answer
+            return AIResult(answer, provider, 'm')
+        return compatible
+
+    async def run_chain(self, answers, reject, *, gemini=None):
+        patches = [patch('core.ai_client.settings.get_secret', return_value='key'),
+                   patch('core.ai_client.request_openai_compatible', AsyncMock(side_effect=self.chain(answers))),
+                   patch('core.ai_client.model_available', gemini is not None),
+                   patch('core.ai_client.client', object() if gemini is not None else None),
+                   patch('core.ai_client._ask_gemini', AsyncMock(side_effect=gemini or ProviderError('off')))]
+        for item in patches:
+            item.start()
+        try:
+            return await ai_client.generate_ai('x', system='s', json_mode=True, soft_reject=reject)
+        finally:
+            for item in reversed(patches):
+                item.stop()
+
+    def test_predicate(self):
+        self.assertTrue(is_empty_selection(self.EMPTY))
+        self.assertTrue(is_empty_selection('{"items": [], "note": "none"}'))
+        for text in (self.FULL, '{}', '[]', 'not json', '{"items": null}', None):
+            self.assertFalse(is_empty_selection(text))
+        self.assertIsNone(empty_selection_check(MIN_CANDIDATES_FOR_EMPTY_RETRY - 1))
+        reject = empty_selection_check(MIN_CANDIDATES_FOR_EMPTY_RETRY)
+        self.assertTrue(reject(self.EMPTY))
+        self.assertFalse(reject(self.FULL))
+        self.assertEqual(MIN_CANDIDATES_FOR_EMPTY_RETRY, 10)
+
+    async def test_empty_falls_through_to_the_next_provider(self):
+        with self.assertLogs('core.ai_client', 'WARNING') as logs:
+            result = await self.run_chain({'Groq': self.EMPTY, 'Zhipu': self.FULL}, empty_selection_check(33))
+        self.assertEqual((result.provider, result.text), ('Zhipu', self.FULL))
+        self.assertEqual(self.calls, ['Groq', 'Zhipu'])
+        self.assertTrue(any('软失败' in line for line in logs.output))
+
+    async def test_empty_twice_is_accepted_without_a_third_call(self):
+        result = await self.run_chain({'Groq': self.EMPTY, 'Zhipu': self.EMPTY, 'OpenRouter': self.FULL},
+                                      empty_selection_check(21))
+        self.assertEqual((result.provider, result.text), ('Zhipu', self.EMPTY))
+        self.assertEqual(self.calls, ['Groq', 'Zhipu'])
+
+    async def test_next_answering_provider_counts_after_hard_errors(self):
+        result = await self.run_chain({'Groq': self.EMPTY, 'Zhipu': ProviderError('429'), 'OpenRouter': self.FULL},
+                                      empty_selection_check(21))
+        self.assertEqual(result.provider, 'OpenRouter')
+        self.assertEqual(self.calls, ['Groq', 'Zhipu', 'OpenRouter'])
+
+    async def test_held_empty_is_returned_when_no_later_provider_answers(self):
+        result = await self.run_chain({'Groq': self.EMPTY, 'Zhipu': ProviderError('429'),
+                                       'OpenRouter': ProviderError('timeout')}, empty_selection_check(21))
+        self.assertEqual((result.provider, result.text), ('Groq', self.EMPTY))
+
+    async def test_gemini_is_the_next_provider_at_the_end_of_the_chain(self):
+        gemini = [AIResult(self.FULL, 'Gemini', 'g')]
+        result = await self.run_chain({'Groq': ProviderError('x'), 'Zhipu': ProviderError('x'),
+                                       'OpenRouter': self.EMPTY}, empty_selection_check(21), gemini=gemini)
+        self.assertEqual(result.provider, 'Gemini')
+
+    async def test_few_candidates_accept_empty_at_once(self):
+        result = await self.run_chain({'Groq': self.EMPTY, 'Zhipu': self.FULL}, empty_selection_check(9))
+        self.assertEqual(result.provider, 'Groq')
+        self.assertEqual(self.calls, ['Groq'])
+        result = await self.run_chain({'Groq': self.EMPTY, 'Zhipu': self.FULL}, None)
+        self.assertEqual(result.provider, 'Groq')
+
+    async def test_empty_claude_answer_retries_on_the_free_chain(self):
+        claude = AsyncMock(return_value=AIResult(self.EMPTY, 'Claude', 'claude-opus-5-5'))
+        with patch('core.ai_client._ask_claude', claude), \
+                patch('core.ai_client.settings.get_secret', return_value='key'), \
+                patch('core.ai_client.request_openai_compatible',
+                      AsyncMock(side_effect=self.chain({'Groq': self.FULL}))):
+            result = await ai_client.generate_ai('x', system='s', json_mode=True, route='personal.following',
+                                                 json_schema={}, soft_reject=empty_selection_check(40))
+        self.assertEqual(result.provider, 'Groq')
+        claude.assert_awaited_once()
+
+    async def test_pipeline_passes_the_check_only_with_enough_candidates(self):
+        import tempfile
+        from pathlib import Path
+
+        from core.news.store import NewsStore
+        for count, expect in ((30, True), (5, False)):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as tmp:
+                store = NewsStore(Path(tmp) / 'news.sqlite3')
+                try:
+                    store.import_history([])
+                    store.upsert_articles([normalize(FeedItem('World', f'Pub{i % 8}', f'Story {i}',
+                                                              f'https://example.com/{i}', 'Concrete detail. ' * 5,
+                                                              time.time() - i), time.time()) for i in range(count)])
+                    pipeline = NewsPipeline(store)
+                    pipeline.ingester.collect = AsyncMock()
+                    model = AsyncMock(return_value=AIResult(self.EMPTY, 'Test', 'model'))
+                    sub = Subscription('discovery', 'discovery', ('discovery',), ('08:00',), 123)
+                    with patch('core.news.pipeline.ai_client.generate_ai', model), \
+                            patch('core.news.pipeline.sources_for', return_value=[
+                                SimpleNamespace(name=f'Pub{i}') for i in range(8)]):
+                        self.assertIsNone(await pipeline.build(sub, '2026-10-19/08:00', preview=True))
+                    reject = model.await_args.kwargs['soft_reject']
+                    self.assertEqual(reject is not None, expect)
+                    if expect:
+                        self.assertTrue(reject(self.EMPTY))
+                finally:
+                    store.close()
 
 
 if __name__ == '__main__':

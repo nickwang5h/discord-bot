@@ -4,6 +4,7 @@ import logging
 import re
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import anthropic
@@ -81,6 +82,43 @@ _claude_client: anthropic.AsyncAnthropic | None = None
 
 class AIServiceUnavailable(RuntimeError):
     """Raised when every configured model provider fails."""
+
+
+class _SoftRetry:
+    """One soft-failure retry across providers.
+
+    The first answer that ``reject(text)`` flags (e.g. an empty selection although there
+    were plenty of candidates) is held back and the chain moves on to the next provider;
+    whatever the next answering provider returns is then accepted. If no later provider
+    answers, the held answer is returned instead of failing the whole call.
+    """
+
+    def __init__(self, reject: Callable[[str], bool] | None):
+        self.reject = reject
+        self.held: AIResult | None = None
+
+    def accept(self, result: AIResult) -> AIResult | None:
+        if self.reject is None:
+            return result
+        if self.held is not None:
+            logger.info(
+                "软失败重试：%s/%s 的结果被采用（前一结果来自 %s/%s）",
+                result.provider, result.model, self.held.provider, self.held.model,
+            )
+            return result
+        try:
+            rejected = bool(self.reject(result.text))
+        except Exception:  # noqa: BLE001 - a broken predicate never blocks a result
+            logger.exception("软失败判定出错，直接采用结果")
+            rejected = False
+        if not rejected:
+            return result
+        self.held = result
+        logger.warning(
+            "%s/%s 返回软失败结果（空选择），改用链中下一个 provider 重试一次",
+            result.provider, result.model,
+        )
+        return None
 
 
 def reload_client() -> bool:
@@ -290,6 +328,7 @@ async def _ask_compatible_providers(
     json_mode: bool,
     max_output_tokens: int,
     errors: list[str],
+    soft: _SoftRetry | None = None,
 ) -> AIResult | None:
     providers = (
         ("Groq", _ask_groq),
@@ -298,7 +337,7 @@ async def _ask_compatible_providers(
     )
     for provider_name, provider in providers:
         try:
-            return await provider(
+            result = await provider(
                 text,
                 system,
                 json_mode=json_mode,
@@ -307,6 +346,13 @@ async def _ask_compatible_providers(
         except Exception as error:
             errors.append(f"{provider_name}: {error}")
             logger.warning("%s 请求失败: %s", provider_name, error)
+            continue
+        if soft is None:
+            return result
+        accepted = soft.accept(result)
+        if accepted is not None:
+            return accepted
+        errors.append(f"{provider_name}: 软失败（空选择）")
     return None
 
 
@@ -474,16 +520,24 @@ async def generate_ai(
     max_output_tokens: int = 4096,
     route: str | None = None,
     json_schema: dict | None = None,
+    soft_reject: Callable[[str], bool] | None = None,
 ) -> AIResult:
     """Route basic generation to Qwen first and reserve Gemini priority for Search.
 
     A known personal ``route`` (see ``CLAUDE_ROUTES``) without search tries Claude first
     and falls through to the unchanged chain below on any Claude failure.
+
+    ``soft_reject(text)`` marks a successful but unusable answer (see ``_SoftRetry``): the
+    chain tries the next provider once and accepts its answer; the first answer is kept
+    as the result when no later provider answers.
     """
+    soft = _SoftRetry(soft_reject)
     if route is not None and not use_search and (json_schema is not None or not json_mode):
         claude_result = await _ask_claude(text, system, route=route, json_schema=json_schema)
         if claude_result is not None:
-            return claude_result
+            accepted = soft.accept(claude_result)
+            if accepted is not None:
+                return accepted
 
     errors: list[str] = []
     in_cooldown = time.time() < gemini_cooldown_until
@@ -495,19 +549,24 @@ async def generate_ai(
             json_mode=json_mode,
             max_output_tokens=max_output_tokens,
             errors=errors,
+            soft=soft,
         )
         if compatible_result is not None:
             return compatible_result
 
     if model_available and client is not None and not in_cooldown:
         try:
-            return await _ask_gemini(
+            gemini_result = await _ask_gemini(
                 text,
                 system,
                 with_search=use_search,
                 json_mode=json_mode,
                 max_output_tokens=max_output_tokens,
             )
+            accepted = soft.accept(gemini_result)
+            if accepted is not None:
+                return accepted
+            errors.append("Gemini: 软失败（空选择）")
         except Exception as error:
             errors.append(f"Gemini: {error}")
             logger.warning("Gemini 请求失败: %s", error)
@@ -517,13 +576,16 @@ async def generate_ai(
                 raise AIServiceUnavailable("Gemini 联网请求失败，且禁止离线降级") from error
             if use_search and not rate_limited:
                 try:
-                    return await _ask_gemini(
+                    offline_result = await _ask_gemini(
                         text,
                         system,
                         with_search=False,
                         json_mode=json_mode,
                         max_output_tokens=max_output_tokens,
                     )
+                    accepted = soft.accept(offline_result)
+                    if accepted is not None:
+                        return accepted
                 except Exception as offline_error:
                     errors.append(f"Gemini offline: {offline_error}")
                     _record_gemini_cooldown(offline_error)
@@ -541,9 +603,16 @@ async def generate_ai(
             json_mode=json_mode,
             max_output_tokens=max_output_tokens,
             errors=errors,
+            soft=soft,
         )
         if compatible_result is not None:
             return compatible_result
+
+    if soft.held is not None:
+        logger.warning(
+            "软失败后无其他 provider 可用，采用 %s/%s 的原结果", soft.held.provider, soft.held.model
+        )
+        return soft.held
 
     logger.error("AI 服务全部失败: %s", " | ".join(errors))
     raise AIServiceUnavailable("所有已配置的模型节点均请求失败")

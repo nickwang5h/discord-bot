@@ -258,9 +258,9 @@ class PipelineRoutingTests(unittest.IsolatedAsyncioTestCase):
         await self.pipeline.preview(self.sub('general', 'general'), '2026-08-01/08:00')
         await self.pipeline.preview(self.sub('discovery', 'discovery'), '2026-08-01/08:00')
         edition = await self.pipeline.preview(self.sub('following', 'following'), '2026-08-01/08:00')
-        shared = {'system', 'use_search', 'json_mode', 'max_output_tokens'}
+        shared = {'system', 'use_search', 'json_mode', 'max_output_tokens', 'soft_reject'}
         for call in self.model.await_args_list[:2]:
-            # The shared call is exactly what it was before T6.
+            # The shared call has no Claude route or schema (soft_reject is the empty-selection retry).
             self.assertEqual(set(call.kwargs), shared)
             self.assertEqual((call.kwargs['use_search'], call.kwargs['json_mode'], call.kwargs['max_output_tokens']),
                              (False, True, 3000))
