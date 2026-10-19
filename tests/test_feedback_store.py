@@ -333,7 +333,7 @@ class BoardAndEntityTests(unittest.TestCase):
             catalog = {row['name']: row for row in source_catalog()}
         self.assertEqual(catalog['CBC Sudbury'], {'name': 'CBC Sudbury', 'category': 'Sudbury',
                                                   'board': 'sudbury', 'personal': True})
-        self.assertEqual((catalog['CNBC']['board'], catalog['CNBC']['personal']), ('invest', False))
+        self.assertEqual((catalog['CNBC Finance']['board'], catalog['CNBC Finance']['personal']), ('invest', False))
         self.assertEqual(catalog['OpenAI']['board'], 'ai_tech')
 
     def test_entities(self):

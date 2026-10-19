@@ -3,21 +3,24 @@ from core.feeds import FeedSource
 from core.news import personal
 
 
+BBC_WORLD = FeedSource('World', 'https://feeds.bbci.co.uk/news/world/rss.xml', 'BBC World')
+ARS_TECHNICA = FeedSource('Tech', 'https://feeds.arstechnica.com/arstechnica/index', 'Ars Technica')
+TECHCRUNCH = FeedSource('Tech', 'https://techcrunch.com/feed/', 'TechCrunch')
+# CNBC (search.cnbc.com …id=100003114, HTTP 503) and Yahoo Finance (finance.yahoo.com/news/rss,
+# HTTP 404) were removed on 2026-10-19 after failing every hourly fetch since at least 10-18.
 GENERAL = (
-    FeedSource('World', 'https://feeds.bbci.co.uk/news/world/rss.xml', 'BBC World'),
+    BBC_WORLD,
     FeedSource('World', 'https://feeds.npr.org/1004/rss.xml', 'NPR World'),
     FeedSource('World', 'https://www.aljazeera.com/xml/rss/all.xml', 'Al Jazeera'),
     FeedSource('Canada', 'https://globalnews.ca/canada/feed/', 'Global News'),
-    FeedSource('Finance', 'https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=120000000&id=100003114', 'CNBC'),
-    FeedSource('Finance', 'https://finance.yahoo.com/news/rss', 'Yahoo Finance'),
-    FeedSource('Tech', 'https://feeds.arstechnica.com/arstechnica/index', 'Ars Technica'),
-    FeedSource('Tech', 'https://techcrunch.com/feed/', 'TechCrunch'),
+    ARS_TECHNICA,
+    TECHCRUNCH,
 )
 DISCOVERY = (
-    GENERAL[6], GENERAL[7],
+    ARS_TECHNICA, TECHCRUNCH,
     FeedSource('Tech', 'https://www.theverge.com/rss/index.xml', 'The Verge'),
     FeedSource('Tech', 'https://www.wired.com/feed/rss', 'Wired'),
-    GENERAL[0],
+    BBC_WORLD,
     FeedSource('World', 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml', 'NYT World'),
     FeedSource('Finance', 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664', 'CNBC Finance'),
     FeedSource('Science', 'https://www.nature.com/nature.rss', 'Nature'),

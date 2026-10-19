@@ -386,7 +386,11 @@ class MigrationAndConfigurationTests(unittest.TestCase):
         self.assertEqual([s.channel_id for s in subs], [123, 456, 456, None])
         self.assertEqual((subs[3].topic, subs[3].source_groups), ('following', ('following',)))
         self.assertEqual(subs[2].params, {'countries': ['US', 'CA']})
-        self.assertEqual(len(sources_for(('general',))), 8)
+        self.assertEqual(len(sources_for(('general',))), 6)
+        # Dead feeds removed 2026-10-19 (CNBC 503, Yahoo Finance 404); CNBC Finance still serves.
+        names = {source.name for group in SHARED_GROUPS.values() for source in group}
+        self.assertFalse(names & {'CNBC', 'Yahoo Finance'})
+        self.assertIn('CNBC Finance', names)
         self.assertEqual(len(SHARED_GROUPS['discovery']), 9)
         shared = {source.name for group in ('general', 'discovery') for source in SHARED_GROUPS[group]}
         self.assertFalse(shared & {'B站关注', '华尔街见闻'})
