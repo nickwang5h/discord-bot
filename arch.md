@@ -328,6 +328,13 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 provider 仍可回答，Groq 由上面的分钟账本跳过）。候选永远比历史优先。following 原有的 30,000 字符
 上限保留，两者取严。
 
+个人专题（following）的顺序不同（2026-10-19：无 Claude 时 following 被从 40 条候选砍到 17 条，30 条历史
+却一条未动）：①候选先只降到 25 条（`PERSONAL_FIT_CANDIDATES`）；②再从最旧一端去历史，降到 10 条；
+③再缩短发给模型的候选 `content` 摘录（原上限 600 字符，二分找最长可放下的长度，最低 300，
+`MIN_FIT_EXCERPT_CHARS`；绑定的原文证据 `_evidence` 不截断）；④仍放不下才把候选从 25 降到 12（历史
+与摘录保持在下限）。共享专题仍按上面的“先候选到 12、再历史”顺序，不截摘录。日志记录候选、历史和
+摘录长度的变化。
+
 发给模型的历史（综合新闻 `recently_delivered`、视野拾遗/following `already_recommended`、电力
 `recently_delivered`）统一由 `models.public_history` 压成防重复用的最小形态：按投递时间倒序取最近
 30 条有标题的投递，每条只有 `title`（原文标题）和至多 100 字符的 `summary`（原始 RSS 摘要，无则用原文

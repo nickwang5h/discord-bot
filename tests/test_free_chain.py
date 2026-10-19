@@ -3,6 +3,7 @@ import datetime
 import json
 import time
 import unittest
+import unittest.mock
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -17,11 +18,16 @@ from core.news.pipeline import (
     MIN_FIT_CANDIDATES,
     MIN_FIT_HISTORY,
     MIN_CANDIDATES_FOR_EMPTY_RETRY,
+    MIN_FIT_EXCERPT_CHARS,
+    PERSONAL_FIT_CANDIDATES,
     NewsPipeline,
     empty_selection_check,
     estimate_tokens,
+    excerpt_size,
     fit_token_budget,
+    history_size,
     is_empty_selection,
+    shorten_excerpts,
 )
 from core.news.topics import TOPICS
 from core.news.topics.discovery import (
@@ -143,6 +149,63 @@ class TokenBudgetTests(unittest.TestCase):
         fitted = fit_token_budget(slate(8, 30), estimate_tokens(slate(8, 14)))
         self.assertEqual((len(fitted.candidates), len(fitted.data['recently_delivered'])), (8, 14))
 
+    def test_personal_history_and_excerpts_yield_before_candidates_drop_below_25(self):
+        def slate(candidates, history=30, excerpt=600):
+            base = prepared(candidates, size=600)
+            base.data['already_recommended'] = [{'title': f'Old {i}', 'summary': 'y' * 100} for i in range(history)]
+            return shorten_excerpts(base, excerpt)
+
+        def fit(limit):
+            fitted = fit_token_budget(slate(40), limit, preferred=PERSONAL_FIT_CANDIDATES,
+                                      excerpt_minimum=MIN_FIT_EXCERPT_CHARS)
+            self.assertEqual([c['id'] for c in fitted.candidates][:3], ['R01', 'R02', 'R03'])
+            return len(fitted.candidates), history_size(fitted), excerpt_size(fitted)
+
+        self.assertEqual((PERSONAL_FIT_CANDIDATES, MIN_FIT_EXCERPT_CHARS), (25, 300))
+        # Above 25 candidates the order is unchanged: candidates first, full history.
+        self.assertEqual(fit(estimate_tokens(slate(30))), (30, 30, 600))
+        # At 25, old history goes before any further candidate (shared order would cut to ~20).
+        self.assertEqual(fit(estimate_tokens(slate(25, 16))), (25, 16, 600))
+        shared = fit_token_budget(slate(40), estimate_tokens(slate(25, 16)))
+        self.assertLess(len(shared.candidates), 25)
+        self.assertEqual(history_size(shared), 30)
+        # History at its floor: excerpts get shorter, still 25 candidates.
+        self.assertEqual(fit(estimate_tokens(slate(25, MIN_FIT_HISTORY, 420))), (25, MIN_FIT_HISTORY, 420))
+        # Excerpts at their floor: only now candidates go below 25.
+        self.assertEqual(fit(estimate_tokens(slate(18, MIN_FIT_HISTORY, MIN_FIT_EXCERPT_CHARS))),
+                         (18, MIN_FIT_HISTORY, MIN_FIT_EXCERPT_CHARS))
+        self.assertEqual(fit(10), (MIN_FIT_CANDIDATES, MIN_FIT_HISTORY, MIN_FIT_EXCERPT_CHARS))
+
+    def test_shorter_excerpts_leave_bound_evidence_whole(self):
+        base = prepared(3, size=600)
+        short = shorten_excerpts(base, 300)
+        self.assertEqual([len(c['content']) for c in short.data['candidates']], [300] * 3)
+        self.assertEqual([len(c['content']) for c in short.candidates], [600] * 3)
+        self.assertEqual([len(c['content']) for c in base.data['candidates']], [600] * 3)
+
+    def test_following_keeps_about_25_candidates_on_the_free_chain(self):
+        """Production 10-18/19: following was cut 40 → 17 while all 30 history entries stayed."""
+        from dataclasses import replace
+        articles = [article(f'Src{s}', i, size=900) for s in range(4) for i in range(12)]
+        history = [{'title': f'Old headline {i} with enough words', 'rss_summary': 'Summary text ' * 20,
+                    'url': f'https://old.example/{i}', 'delivered_at': NOW - i} for i in range(30)]
+        sub = Subscription('following', 'following', ('following',), ('08:20',), 2)
+        topic = TOPICS['following']
+
+        def rebuild(count):
+            return topic.prepare(articles, replace(sub, max_candidates=count), history, '早间')
+
+        slate = rebuild(40)
+        self.assertGreater(estimate_tokens(slate), FREE_CHAIN_INPUT_TOKEN_LIMIT)
+        before = fit_token_budget(slate, FREE_CHAIN_INPUT_TOKEN_LIMIT, rebuild)
+        after = fit_token_budget(slate, FREE_CHAIN_INPUT_TOKEN_LIMIT, rebuild, preferred=PERSONAL_FIT_CANDIDATES,
+                                 excerpt_minimum=MIN_FIT_EXCERPT_CHARS)
+        self.assertLess(len(before.candidates), 20)
+        self.assertGreaterEqual(len(after.candidates), PERSONAL_FIT_CANDIDATES)
+        self.assertLessEqual(estimate_tokens(after), FREE_CHAIN_INPUT_TOKEN_LIMIT)
+        self.assertGreaterEqual(history_size(after), MIN_FIT_HISTORY)
+        self.assertGreaterEqual(excerpt_size(after), MIN_FIT_EXCERPT_CHARS)
+
     def test_limit_is_configurable_and_bounded(self):
         store = SimpleNamespace()
         self.assertEqual(NewsPipeline(store).input_tokens, FREE_CHAIN_INPUT_TOKEN_LIMIT)
@@ -201,6 +264,40 @@ class PipelineBudgetTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLessEqual(seen['tokens'], 4000)
                 self.assertLess(seen['count'], 40)
                 self.assertGreaterEqual(seen['count'], MIN_FIT_CANDIDATES)
+            finally:
+                store.close()
+
+
+class PipelineFitWiringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_the_personal_topic_uses_the_personal_order(self):
+        import tempfile
+        from pathlib import Path
+
+        from core.news import pipeline as module
+        from core.news.store import NewsStore
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NewsStore(Path(tmp) / 'news.sqlite3')
+            try:
+                store.import_history([])
+                store.upsert_articles([normalize(FeedItem('World', f'Pub{i % 8}', f'Story {i}', f'https://example.com/{i}',
+                                                 'Concrete observation with numbers. ' * 14, time.time() - i),
+                                        time.time()) for i in range(20)])
+                pipeline = NewsPipeline(store)
+                pipeline.ingester.collect = AsyncMock()
+                fit = unittest.mock.MagicMock(side_effect=fit_token_budget)
+                with patch('core.news.pipeline.fit_token_budget', fit), \
+                        patch('core.news.pipeline.ai_client.generate_ai',
+                              AsyncMock(return_value=AIResult('{"items":[]}', 'Test', 'model'))), \
+                        patch('core.news.pipeline.sources_for', return_value=[
+                            SimpleNamespace(name=f'Pub{i}') for i in range(8)]):
+                    for name in ('discovery', 'following'):
+                        await pipeline.build(Subscription(name, name, (name,), ('08:00',), 1), '2026-10-19/08:00',
+                                             preview=True)
+                shared, personal = fit.call_args_list
+                self.assertEqual(shared.kwargs, {})
+                self.assertEqual(personal.kwargs, {'preferred': module.PERSONAL_FIT_CANDIDATES,
+                                                   'excerpt_minimum': module.MIN_FIT_EXCERPT_CHARS})
+                self.assertTrue(callable(personal.args[2]))
             finally:
                 store.close()
 

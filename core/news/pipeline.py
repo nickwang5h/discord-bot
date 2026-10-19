@@ -23,6 +23,10 @@ FREE_CHAIN_INPUT_TOKEN_LIMIT = 6500
 # Candidates outrank history: shrink candidates to this floor first, then history.
 MIN_FIT_CANDIDATES = 12
 MIN_FIT_HISTORY = 10
+# Personal topics (following) keep about this many candidates before history yields, then
+# shorten excerpts (not below MIN_FIT_EXCERPT_CHARS) before dropping below it.
+PERSONAL_FIT_CANDIDATES = 25
+MIN_FIT_EXCERPT_CHARS = 300
 HISTORY_KEYS = ('recently_delivered', 'already_recommended')
 # With at least this many candidates an empty selection is treated as a soft failure: the
 # provider chain tries the next provider once and accepts empty only if that is empty too.
@@ -79,29 +83,85 @@ def trim_history(prepared, count):
     return dataclasses.replace(prepared, data=data)
 
 
-def fit_token_budget(prepared, limit, rebuild=None, *, minimum=MIN_FIT_CANDIDATES,
-                     history_minimum=MIN_FIT_HISTORY):
-    """Fit the free-chain input budget; never truncate a single candidate or history entry.
+def history_size(prepared):
+    return max((len(prepared.data.get(key) or []) for key in HISTORY_KEYS), default=0)
 
-    1. Drop candidates from the tail down to the largest count that fits, but not below
-       `minimum`. `rebuild(n)` re-prepares with at most n candidates (personal topics re-rank
-       at the smaller size); without it the prepared order is cut.
-    2. If `minimum` candidates still do not fit, drop the oldest history entries instead,
-       down to `history_minimum`. Whatever remains is sent; larger providers still answer.
+
+def excerpt_size(prepared):
+    """Longest candidate `content` excerpt the model sees (0 when candidates have none)."""
+    return max((len(c['content']) for c in prepared.data.get('candidates') or []
+                if isinstance(c, dict) and isinstance(c.get('content'), str)), default=0)
+
+
+def shorten_excerpts(prepared, chars):
+    """Cut each candidate's model-facing `content` to `chars`; bound evidence stays whole."""
+    data = dict(prepared.data)
+    data['candidates'] = [
+        {**c, 'content': c['content'][:chars]}
+        if isinstance(c, dict) and isinstance(c.get('content'), str) and len(c['content']) > chars else c
+        for c in prepared.data.get('candidates') or []]
+    return dataclasses.replace(prepared, data=data)
+
+
+def fit_token_budget(prepared, limit, rebuild=None, *, minimum=MIN_FIT_CANDIDATES,
+                     history_minimum=MIN_FIT_HISTORY, preferred=None, excerpt_minimum=None):
+    """Fit the free-chain input budget by dropping whole candidates and history entries.
+
+    `rebuild(n)` re-prepares with at most n candidates (personal topics re-rank at the
+    smaller size); without it the prepared order is cut. Each step stops at the largest
+    slate that fits:
+
+    1. Drop candidates from the tail, but not below `preferred` (default `minimum`).
+    2. Drop the oldest history entries, down to `history_minimum`.
+    3. With `excerpt_minimum`, shorten the model-facing candidate excerpts, not below it.
+    4. Drop candidates from `preferred` down to `minimum` (history and excerpts at their floors).
+
+    Shared topics use the defaults (candidates to the floor, then history; no excerpt cuts).
+    Whatever remains at the floors is sent; larger providers may still answer.
     """
     if estimate_tokens(prepared) <= limit:
         return prepared
-    if len(prepared.candidates) > minimum:
-        rebuild = rebuild or (lambda count: trim_candidates(prepared, count))
-        best = _largest_fit(minimum, len(prepared.candidates) - 1, rebuild, limit)
+    rebuild = rebuild or (lambda count: trim_candidates(prepared, count))
+    total = len(prepared.candidates)
+    keep = min(total, max(minimum, preferred or minimum))
+    # 1. Candidates down to `keep`.
+    if total > keep:
+        best = _largest_fit(keep, total - 1, rebuild, limit)
         if best is not None:
             return best
-        prepared = rebuild(minimum)
-    history = max((len(prepared.data.get(key) or []) for key in HISTORY_KEYS), default=0)
-    if history <= history_minimum:
-        return prepared
-    best = _largest_fit(history_minimum, history - 1, lambda count: trim_history(prepared, count), limit)
-    return best if best is not None else trim_history(prepared, history_minimum)
+        base = rebuild(keep)
+    else:
+        base = prepared
+    # 2. History down to its floor.
+    history = history_size(base)
+    if history > history_minimum:
+        best = _largest_fit(history_minimum, history - 1, lambda count: trim_history(base, count), limit)
+        if best is not None:
+            return best
+        history = history_minimum
+    excerpt = None
+
+    def make(slate):
+        slate = trim_history(slate, history)
+        return slate if excerpt is None else shorten_excerpts(slate, excerpt)
+
+    # 3. Shorter excerpts, not below `excerpt_minimum`.
+    if excerpt_minimum is not None:
+        longest = excerpt_size(base)
+        if longest > excerpt_minimum:
+            trimmed = trim_history(base, history)
+            best = _largest_fit(excerpt_minimum, longest - 1, lambda chars: shorten_excerpts(trimmed, chars), limit)
+            if best is not None:
+                return best
+            excerpt = excerpt_minimum
+    # 4. Candidates below `keep`, down to `minimum`.
+    floor = min(total, minimum)
+    if keep > floor:
+        best = _largest_fit(floor, keep - 1, lambda count: make(rebuild(count)), limit)
+        if best is not None:
+            return best
+        return make(rebuild(floor))
+    return make(base)
 
 
 class NewsPipeline:
@@ -141,17 +201,22 @@ class NewsPipeline:
         prepared = prepare(subscription)
         if not prepared.candidates:
             return None
-        def history_size(slate):
-            return max((len(slate.data.get(key) or []) for key in HISTORY_KEYS), default=0)
-
         before, history_before, tokens = len(prepared.candidates), history_size(prepared), estimate_tokens(prepared)
-        # Personal ranking reserves board/exploration slots, so it re-ranks at the smaller size.
-        rebuild = (lambda count: prepare(dataclasses.replace(subscription, max_candidates=count))) if personal else None
-        prepared = fit_token_budget(prepared, self.input_tokens, rebuild)
+        excerpt_before = excerpt_size(prepared)
+        if personal:
+            # Personal ranking reserves board/exploration slots, so it re-ranks at the smaller size;
+            # history and excerpts yield before the slate drops below PERSONAL_FIT_CANDIDATES.
+            prepared = fit_token_budget(
+                prepared, self.input_tokens,
+                lambda count: prepare(dataclasses.replace(subscription, max_candidates=count)),
+                preferred=PERSONAL_FIT_CANDIDATES, excerpt_minimum=MIN_FIT_EXCERPT_CHARS)
+        else:
+            prepared = fit_token_budget(prepared, self.input_tokens)
         if tokens > self.input_tokens:
-            logger.info('新闻 %s 输入约 %d token 超过 %d：候选 %d → %d，历史 %d → %d（约 %d token）',
+            logger.info('新闻 %s 输入约 %d token 超过 %d：候选 %d → %d，历史 %d → %d，摘录 ≤%d → ≤%d 字符（约 %d token）',
                         subscription.id, tokens, self.input_tokens, before, len(prepared.candidates),
-                        history_before, history_size(prepared), estimate_tokens(prepared))
+                        history_before, history_size(prepared), excerpt_before, excerpt_size(prepared),
+                        estimate_tokens(prepared))
         # Include history and scope: selection is contextual, not a universal article summary.
         key = fingerprint([topic.name, topic.version, subscription.params, subscription.source_groups,
                            subscription.max_candidates, subscription.max_output_tokens, prepared.data,
