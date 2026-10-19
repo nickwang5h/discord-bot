@@ -7,9 +7,10 @@ is called (design §9 Q7). Weeks run Monday 00:00 to Monday 00:00 in ``BOT_TIMEZ
 so a week that crosses a DST change is 167 or 169 hours long.
 
 Sections (design §5.6, 1–7): exposures (personal / shared); 🆕/👌/🚫 with exact and
-coarse verdicts reported apart; sources with the most 🆕, sources without any 🆕 and
-cut candidates (≥ ``CUT_MIN_EXPOSURES`` exposures this week and no 🆕), one board
-line; inbox saved / done / dropped / backlog; watch hits; /recall uses; the current
+coarse verdicts reported apart; sources with the most 🆕, personal sources without any
+🆕, cut candidates (personal sources with ≥ ``CUT_MIN_RATED`` rated items and no 🆕 over
+the last ``CUT_WINDOW_WEEKS`` weeks), shared sources listed apart as not rateable (shared
+channels have no feedback buttons), one board line; inbox saved / done / dropped / backlog; watch hits; /recall uses; the current
 reader profile. A section without data shows "暂无".
 """
 from __future__ import annotations
@@ -31,7 +32,8 @@ logger = logging.getLogger(__name__)
 DAY = 86400
 MAX_CHARS = 4000
 TOP_SOURCES = 5
-CUT_MIN_EXPOSURES = 3
+CUT_MIN_RATED = 3
+CUT_WINDOW_WEEKS = 4
 TREND_WEEKS = 4
 MIN_RATED_FOR_RATE = 3
 LIST_LIMIT = 15
@@ -126,6 +128,7 @@ class WeeklyReview:
     top_sources: tuple[SourceLine, ...] = ()
     zero_new_sources: tuple[SourceLine, ...] = ()
     cut_candidates: tuple[SourceLine, ...] = ()
+    shared_sources: tuple[SourceLine, ...] = ()  # exposed only in shared channels: not rateable
     unexposed_personal: tuple[str, ...] = ()
     silent_sources: tuple[str, ...] = ()  # configured sources with no material this week
     boards: tuple[dict[str, Any], ...] = ()
@@ -199,14 +202,16 @@ class WeeklyReview:
                 rate = f" · 新知率 {_rate(s.new_rate)}" if s.new_rate is not None else ""
                 lines.append(f"{rank}. {_name(s.name)} 🆕 {_fmt(s.new)} · 曝光 {s.exposures}{rate}")
         if self.zero_new_sources:
-            lines.append("零新知（本周有曝光）：" + _names(
+            lines.append("零新知的个人源（本周有曝光）：" + _names(
                 [f"{_name(s.name)}({s.exposures})" for s in self.zero_new_sources]))
         if self.cut_candidates:
-            lines.append(f"✂️ 砍源候选（曝光 ≥ {CUT_MIN_EXPOSURES} 且零新知）：")
+            lines.append(f"✂️ 砍源候选（个人源，近 {CUT_WINDOW_WEEKS} 周已评 ≥ {CUT_MIN_RATED} 且零新知）：")
             for s in self.cut_candidates[:LIST_LIMIT]:
-                tag = "" if s.personal is not False else "（共享源）"
-                lines.append(f"- {_name(s.name)}{tag} 曝光 {s.exposures} · 已评 {s.rated}"
-                             f" · 👌 {_fmt(s.known)} · 🚫 {_fmt(s.skip)}")
+                lines.append(f"- {_name(s.name)} 已评 {s.rated} · 👌 {_fmt(s.known)} · 🚫 {_fmt(s.skip)}"
+                             f" · 曝光 {s.exposures}")
+        if self.shared_sources:
+            lines.append("共享源（频道没有反馈按钮，无法评价，不作砍源建议）：" + _names(
+                [f"{_name(s.name)}({s.exposures})" for s in self.shared_sources]))
         if self.unexposed_personal:
             lines.append("本周没被推送的个人源：" + _names([_name(n) for n in self.unexposed_personal]))
         if self.silent_sources:
@@ -302,8 +307,23 @@ def _feedback_sections(feedback, week: Week, catalog: dict[str, bool]) -> dict[s
     rows = feedback.stats(start, until=end, by="source")["rows"]
     sources = [_source_line(row, catalog) for row in rows]
     top = sorted((s for s in sources if s.new > 0), key=lambda s: (-s.new, -s.exposures, s.name))[:TOP_SOURCES]
-    zero = sorted((s for s in sources if s.exposures > 0 and s.new == 0), key=lambda s: (-s.exposures, s.name))
     exposed = {s.name for s in sources if s.exposures > 0}
+    # Only personal pushes carry feedback buttons, so only personally shown sources are rateable.
+    personal_sources = [_source_line(row, catalog)
+                        for row in feedback.stats(start, until=end, by="source", personal=True)["rows"]]
+    rateable = {s.name for s in personal_sources if s.exposures > 0}
+    zero = sorted((s for s in personal_sources if s.exposures > 0 and s.new == 0),
+                  key=lambda s: (-s.exposures, s.name))
+    shared_only = sorted((s for s in sources if s.exposures > 0 and s.name not in rateable),
+                         key=lambda s: (-s.exposures, s.name))
+    window = week
+    for _ in range(CUT_WINDOW_WEEKS - 1):
+        window = window.previous()
+    cut = sorted(
+        (s for row in feedback.stats(window.start_ts, until=end, by="source", personal=True)["rows"]
+         if (s := _source_line(row, catalog)).rated >= CUT_MIN_RATED and s.new == 0
+         and (not catalog or s.personal is True)),
+        key=lambda s: (-s.rated, s.name))
     board_rows = {row["name"]: row for row in feedback.stats(start, until=end, by="board")["rows"]}
     boards = []
     for board in (*BOARDS, *sorted(set(board_rows) - set(BOARDS))):
@@ -320,7 +340,8 @@ def _feedback_sections(feedback, week: Week, catalog: dict[str, bool]) -> dict[s
         "trend": tuple(reversed(trend)),
         "top_sources": tuple(top),
         "zero_new_sources": tuple(zero),
-        "cut_candidates": tuple(s for s in zero if s.exposures >= CUT_MIN_EXPOSURES),
+        "cut_candidates": tuple(cut),
+        "shared_sources": tuple(shared_only),
         "unexposed_personal": tuple(sorted(name for name, is_personal in catalog.items()
                                            if is_personal and name not in exposed)),
         "boards": tuple(boards),
@@ -430,6 +451,7 @@ def build_review(week: Week, *, feedback=None, inbox=None, knowledge=None, watch
         top_sources=values.get("top_sources", ()),
         zero_new_sources=values.get("zero_new_sources", ()),
         cut_candidates=values.get("cut_candidates", ()),
+        shared_sources=values.get("shared_sources", ()),
         unexposed_personal=values.get("unexposed_personal", ()),
         silent_sources=values.get("信源", ()),
         boards=values.get("boards", ()),

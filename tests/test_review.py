@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from core.feedback.store import FeedbackStore, snapshot
 from core.inbox import DONE, DROPPED, InboxStore
 from core.knowledge import review
-from core.knowledge.review import (CUT_MIN_EXPOSURES, EMPTY, MAX_CHARS, Week, build_review, parse_week,
+from core.knowledge.review import (CUT_MIN_RATED, CUT_WINDOW_WEEKS, EMPTY, MAX_CHARS, Week, build_review, parse_week,
                                    previous_week, week_of_date)
 from core.knowledge.store import KnowledgeDoc, KnowledgeStore
 
@@ -115,31 +115,72 @@ class FeedbackSectionTests(Fixture):
         for index, name in enumerate(['S1', 'S2', 'S3', 'S4', 'S5', 'S6']):
             for _ in range(6 - index):
                 self.expose(name, verdict='new')
-        for _ in range(CUT_MIN_EXPOSURES):
+        for _ in range(CUT_MIN_RATED):
             self.expose('Dull', verdict='known')
-        for _ in range(CUT_MIN_EXPOSURES - 1):
-            self.expose('Quiet')
-        for _ in range(CUT_MIN_EXPOSURES):
+        # Shown often but never rated: not enough evidence to suggest a cut (CBC Ottawa in W42).
+        for _ in range(5):
+            self.expose('Unrated')
+        for _ in range(CUT_MIN_RATED - 1):
+            self.expose('Thin', verdict='known')
+        for _ in range(CUT_MIN_RATED):
             self.expose('Mixed', verdict='known')
         self.expose('Mixed', verdict='new')
         # A verdict this week on an item shown last week: rated, but not "exposed this week".
         old = self.expose('Old', at=WEEK.start_ts - 86400)
         self.feedback.record(old, 'known', via='button', now=MID)
+        # Shared channels have no buttons: listed apart, never a cut candidate.
+        for _ in range(4):
+            self.expose('Nature', personal=False, category='Science')
 
-        result = self.build(catalog=[{'name': 'Dull', 'personal': True}, {'name': 'Never', 'personal': True},
-                                     {'name': 'Quiet', 'personal': False}])
+        catalog = [{'name': n, 'personal': True} for n in ('Dull', 'Unrated', 'Thin', 'Mixed', 'Never')]
+        result = self.build(catalog=catalog + [{'name': 'Nature', 'personal': False}])
         self.assertEqual([s.name for s in result.top_sources], ['S1', 'S2', 'S3', 'S4', 'S5'])
         self.assertEqual(result.top_sources[0].new, 6)
-        self.assertEqual([s.name for s in result.zero_new_sources], ['Dull', 'Quiet'])
+        self.assertEqual([s.name for s in result.zero_new_sources], ['Unrated', 'Dull', 'Thin'])
         self.assertEqual([s.name for s in result.cut_candidates], ['Dull'])
         self.assertTrue(result.cut_candidates[0].personal)
+        self.assertEqual([(s.name, s.exposures) for s in result.shared_sources], [('Nature', 4)])
         self.assertEqual(result.unexposed_personal, ('Never',))
         text = result.render()
         self.assertIn('1. `S1` 🆕 6 · 曝光 6 · 新知率 100%', text)
         self.assertNotIn('`S6`', text)
-        self.assertIn('零新知（本周有曝光）：`Dull`(3)、`Quiet`(2)', text)
-        self.assertIn('- `Dull` 曝光 3 · 已评 3', text)
+        self.assertIn('零新知的个人源（本周有曝光）：`Unrated`(5)、`Dull`(3)、`Thin`(2)', text)
+        self.assertIn(f'砍源候选（个人源，近 {CUT_WINDOW_WEEKS} 周已评 ≥ {CUT_MIN_RATED} 且零新知）', text)
+        self.assertIn('- `Dull` 已评 3 · 👌 3 · 🚫 0 · 曝光 3', text)
+        self.assertNotIn('- `Unrated`', text)
+        self.assertIn('共享源（频道没有反馈按钮，无法评价，不作砍源建议）：`Nature`(4)', text)
+        self.assertNotIn('- `Nature`', text)
         self.assertIn('本周没被推送的个人源：`Never`', text)
+
+    def test_cut_rule_uses_ratings_from_the_last_four_weeks(self):
+        earlier = WEEK.start_ts - 2 * 7 * 86400 + 3600
+        too_old = WEEK.start_ts - CUT_WINDOW_WEEKS * 7 * 86400 + 3600
+        # Simon Willison: rated known across several weeks, never new.
+        self.expose('Simon', at=earlier, verdict='known')
+        self.expose('Simon', at=earlier, verdict='skip')
+        self.expose('Simon', verdict='known')
+        # One 🆕 inside the window keeps a source off the list.
+        self.expose('Ottawa', at=earlier, verdict='new')
+        for _ in range(3):
+            self.expose('Ottawa', verdict='known')
+        # Ratings older than the window do not count.
+        for _ in range(3):
+            self.expose('Ancient', at=too_old, verdict='known')
+        self.expose('Ancient', verdict='known')
+        # Rated shared-channel items (coarse reactions) are not rateable sources either.
+        for _ in range(3):
+            self.expose('BBC', personal=False, category='World', verdict='known', coarse_n=1)
+        result = self.build()
+        self.assertEqual([(s.name, s.rated) for s in result.cut_candidates], [('Simon', 3)])
+        self.assertEqual(result.cut_candidates[0].skip, 1)
+        self.assertEqual([s.name for s in result.shared_sources], ['BBC'])
+
+    def test_cut_rule_skips_sources_no_longer_personal(self):
+        for _ in range(3):
+            self.expose('Removed', verdict='known')
+        self.assertEqual([s.name for s in self.build().cut_candidates], ['Removed'])
+        result = self.build(catalog=[{'name': 'Other', 'personal': True}])
+        self.assertEqual(result.cut_candidates, ())
 
     def test_board_line_and_trend(self):
         self.expose('CBC Ottawa', verdict='new')
