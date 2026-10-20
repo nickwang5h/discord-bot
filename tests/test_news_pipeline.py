@@ -333,7 +333,7 @@ class FeedbackButtonDeliveryTests(PipelineFixture):
 
         async def two(raw, **kwargs):
             ids = [c['id'] for c in json.loads(raw)['candidates']][:2]
-            items = [{'id': i, 'title': f'中文标题{n}', 'summary': '原文提供了具体观察。',
+            items = [{'id': i, 'title': f'中文标题{"甲乙"[n]}', 'summary': '原文提供了具体观察。',
                       'why_read': '可以想一想：条件是否改变结论？', 'tags': ['渥太华']}
                      for n, i in enumerate(ids)]
             return AIResult(json.dumps({'items': items}, ensure_ascii=False), 'Test', 'model')
@@ -341,8 +341,8 @@ class FeedbackButtonDeliveryTests(PipelineFixture):
         self.model.side_effect = two
         edition = await self.pipeline.preview(subscription('following', 'following'), '2026-08-01/08:00')
         body = edition.embeds[0].description
-        self.assertLess(body.index('① **[中文标题0]'), body.index('② **[中文标题1]'))
-        self.assertEqual([item['title'] for item in edition.selected], ['中文标题0', '中文标题1'])
+        self.assertLess(body.index('① **[中文标题甲]'), body.index('② **[中文标题乙]'))
+        self.assertEqual([item['title'] for item in edition.selected], ['中文标题甲', '中文标题乙'])
         discovery = TOPICS['discovery'].render(edition.selected, '早间', 'Test')[0].description
         self.assertNotIn('①', discovery)
         self.assertFalse(TOPICS['discovery'].personal)

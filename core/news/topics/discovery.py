@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 
 import discord
 
+from core.news import factcheck
 from core.news.ingest import source_url as _source_url
 from core.news.models import (
     SelectionInput,
@@ -173,7 +174,8 @@ def _normalize_recommendations(text, candidates, *, with_tags=False):
             if field in OPTIONAL_FIELDS and value == "":
                 rendered[field] = ""
                 continue
-            if (not isinstance(value, str) or not value.strip() or len(value) > limit
+            # Person-name brackets (甘茨（Benny Gantz）) do not count against the limit.
+            if (not isinstance(value, str) or not value.strip() or factcheck.display_length(value) > limit
                     or re.search(r"https?://|<|>", value, re.IGNORECASE)):
                 raise ValueError("探索阅读文本无效或过长")
             value = " ".join(value.split())
@@ -210,7 +212,7 @@ def _render_recommendations(items, intro=DISCOVERY_INTRO, *, numbered=False):
 
 class DiscoveryTopic:
     name = "discovery"
-    version = "1"
+    version = "2"
     personal = False
     numbered = False
     max_age = MAX_AGE_SECONDS
@@ -230,7 +232,7 @@ class DiscoveryTopic:
         "最多5条但不凑数，可返回空列表，不设领域配额，不给分数、不写趋势导语。"
         "title 为40字符以内的自然中文标题；summary 为160字符以内、普通读者能理解的"
         "原文事实概述，不假装读过全文；why_read 为120字符以内的具体阅读价值，"
-        "不能只是重复摘要或声称有启发。若提出联想或待思考的问题，明确使用‘可以想一想’"
+        "不能只是重复摘要或声称有启发。" + factcheck.PERSON_NAME_RULE + "若提出联想或待思考的问题，明确使用‘可以想一想’"
         "或疑问句，不能把推测写成原文结论。证据无法支撑具体推荐理由时放弃该条。"
         "只返回 JSON：{\"items\":[{\"id\":\"R01\",\"title\":\"中文标题\","
         "\"summary\":\"具体内容\",\"why_read\":\"具体阅读价值\"}]}。"
@@ -262,6 +264,12 @@ class DiscoveryTopic:
         if any(item['url'] in previous_urls and not item['summary'].startswith('新进展：') for item in selected):
             raise ValueError('同链接推荐必须明确说明新进展')
         return selected
+
+    def factcheck(self, selected):
+        """Deterministic source check; failed items carry the original English text instead."""
+        return factcheck.guard(selected, fields=("title", "summary", "why_read"), title_field="title",
+                               summary_field="summary", clear=("why_read",),
+                               budget=REQUIRED_FIELDS["title"] + REQUIRED_FIELDS["summary"])
 
     def identity(self, item):
         return fingerprint([item["url"], item["_version"]])
@@ -306,7 +314,7 @@ class FollowingTopic(DiscoveryTopic):
     profile goes into the prompt, the model adds topic tags, and selection may use Claude.
     """
     name = "following"
-    version = "3"
+    version = "4"
     personal = True
     route = "personal.following"
     numbered = True
@@ -333,6 +341,7 @@ class FollowingTopic(DiscoveryTopic):
         "最多5条但不凑数，可返回空列表，不给分数。"
         "title 为40字符以内的自然中文标题；summary 为160字符以内的内容概述，"
         "不假装看过视频或读过全文；why_read 为120字符以内的具体理由，不能只是重复摘要。"
+        + factcheck.PERSON_NAME_RULE +
         "每条给1到3个 tags，概括主题：中文短语，专有名词保留原文（如 Nvidia、OPG），每个2到12字，"
         "同一主题优先复用 tag_vocabulary 里的词。"
         "只返回 JSON：{\"items\":[{\"id\":\"R01\",\"title\":\"中文标题\","

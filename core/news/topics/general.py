@@ -10,6 +10,7 @@ from urllib.parse import quote, urlsplit
 import discord
 
 from core.feeds import FeedItem
+from core.news import factcheck
 from core.news.models import (
     SelectionInput,
     bind_evidence,
@@ -290,7 +291,7 @@ def _build_digest_embeds(
 
 class GeneralTopic:
     name = "general"
-    version = "1"
+    version = "2"
     max_age = 86400
 
     def validate_params(self, params):
@@ -338,7 +339,8 @@ class GeneralTopic:
             "必须比较历史与候选中的具体事实，只有新增结果、数字、决定或行动才可再次选择，"
             "这种条目的摘要必须以‘新进展：’开头，直接交代新增事实。无法指出新增事实则跳过。"
             "每条返回简短自然的中文标题（最多40字符，专名可保留英文），以及一两句中文摘要"
-            "（最多140字符）。标题概括事件，摘要补充具体事实，不重复标题，不添加无来源的影响推演。"
+            "（最多140字符）。" + factcheck.PERSON_NAME_RULE + "标题与摘要分工："
+            "标题概括事件，摘要补充具体事实，不重复标题，不添加无来源的影响推演。"
             "事实必须来自对应 title 与 rss_summary；只有标题时仅概括已知事实，不编造细节。"
             "指控、声明、推测和已证实事实必须区分；有争议的说法在标题与摘要中保留提出方及"
             "‘指控/称/据报道’等限定，不把指控写成定论，不把相邻但不同的指控合并成一个事实。"
@@ -358,6 +360,12 @@ class GeneralTopic:
         if any(item['url'] in previous_urls and not str(item['digest_summary']).startswith('新进展：') for item in selected):
             raise ValueError('同链接摘要必须明确说明新进展')
         return selected
+
+    def factcheck(self, selected):
+        """Deterministic source check; failed items carry the original English text instead."""
+        return factcheck.guard(selected, fields=("digest_title", "digest_summary"),
+                               title_field="digest_title", summary_field="digest_summary",
+                               budget=MAX_RENDERED_TITLE_CHARS + MAX_RENDERED_SUMMARY_CHARS)
 
     def identity(self, item):
         summary = re.sub(r"\s+", "", str(item["rss_summary"])).casefold()

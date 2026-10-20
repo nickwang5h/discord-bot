@@ -8,6 +8,7 @@ import logging
 from core import ai_client
 from core.claude_budget import estimate_input_tokens
 from core.jobs import RetryPolicy, run_delivery_job
+from core.news import factcheck
 from core.news.ingest import Ingester
 from core.news.models import Edition, fingerprint, trim_candidates
 from core.news.sources import sources_for
@@ -246,12 +247,23 @@ class NewsPipeline:
             selected = topic.validate(text, prepared.candidates, subscription, history, profile=profile)
         else:
             selected = topic.validate(text, prepared.candidates, subscription, history)
+        # Free deterministic source check (numbers, Latin names): failures are delivered with the
+        # original English text, never dropped. Topics without it (power) keep their own checks.
+        if selected and hasattr(topic, 'factcheck'):
+            selected = topic.factcheck(selected)
+            failed = [item for item in selected if not item['_factcheck']['ok']]
+            if failed:
+                logger.warning('新闻 %s 事实核查 %d/%d 条未通过，改发原文 [%s]: %s', subscription.id, len(failed),
+                               len(selected), attribution,
+                               '; '.join(','.join(item['_factcheck']['reasons'][:3]) for item in failed))
         # Rendering also validates the complete message before caching or committing a send intent.
         if selected:
             topic.render(selected, edition_name(period), attribution)
         if not cached:
             self.store.cache(key, topic.name, topic.version, subscription.params, text, attribution,
                              prepared.candidates, selected)
+        # Per-item generator, so error rates can be tracked per provider/model later.
+        provider, model = factcheck.parse_attribution(attribution)
         publishable = []
         identities = set()
         for item in selected:
@@ -259,7 +271,7 @@ class NewsPipeline:
             if identity in identities or (not preview and self.store.seen(subscription.id, item, identity)):
                 continue
             identities.add(identity)
-            publishable.append({**item, '_delivery_key': identity})
+            publishable.append({**item, '_delivery_key': identity, '_provider': provider, '_model': model})
         if not publishable:
             return None
         embeds = topic.render(publishable, edition_name(period), attribution)

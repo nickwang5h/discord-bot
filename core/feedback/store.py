@@ -99,7 +99,9 @@ def snapshot(item):
         return None
     title = _text(evidence.get('title') or item.get('title') or url, 300)
     rendered = _text(item.get('digest_title') or item.get('title'), 200)
-    title_zh = rendered if rendered and rendered != title else None
+    # A fact-check fallback renders the original text, so there is no Chinese title.
+    failed_check = isinstance(item.get('_factcheck'), dict) and item['_factcheck'].get('ok') is False
+    title_zh = rendered if rendered and rendered != title and not failed_check else None
     source = _text(evidence.get('publisher') or item.get('publisher') or item.get('source'), 60) or '未知来源'
     category = _text(evidence.get('category') or item.get('category'), 40)
     tags = _model_tags(item.get('tags'))
