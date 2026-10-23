@@ -12,6 +12,7 @@ from cogs.daily_reading import DailyReading
 from cogs.feedback import Feedback
 from cogs.help import _build_help_embed
 from cogs.knowledge import Knowledge
+from cogs.models_daily import ModelsDaily
 from cogs.news import News
 from cogs.weather import Weather
 from config import PROJECT_ROOT
@@ -75,8 +76,10 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                 patch.dict(AIDaily.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(DailyReading.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
                 patch.dict(Weather.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
+                patch.dict(ModelsDaily.__init__.__globals__, {"SCHEDULED_JOBS_ENABLED": False}),
             ):
-                cogs = [News(bot), AIDaily(bot), DailyReading(bot), Weather(bot), Feedback(bot), Knowledge(bot)]
+                cogs = [News(bot), AIDaily(bot), DailyReading(bot), Weather(bot), Feedback(bot), Knowledge(bot),
+                        ModelsDaily(bot)]
                 try:
                     loop_specs = (
                         (cogs[0], "hourly_fetch"),
@@ -88,6 +91,7 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                         (cogs[5], "sync_loop"),
                         (cogs[5], "maintenance"),
                         (cogs[5], "weekly_report"),
+                        (cogs[6], "models_daily"),
                     )
                     for cog, loop_name in loop_specs:
                         self.assertFalse(getattr(cog, loop_name).is_running(), loop_name)
@@ -99,14 +103,14 @@ class ExtensionLoadTests(unittest.IsolatedAsyncioTestCase):
                     }
                     self.assertTrue(
                         {"test_hourly_fetch", "test_ai_news", "test_reading", "test_news", "test_weather",
-                         "feedback_stats", "recall", "review"}
+                         "feedback_stats", "recall", "review", "test_models"}
                         <= command_names
                     )
                 finally:
                     await cogs[0].cog_unload()
                     await cogs[4].cog_unload()
                     await cogs[5].cog_unload()
-                    for cog in cogs[1:4]:
+                    for cog in (*cogs[1:4], cogs[6]):
                         cog.cog_unload()
                     await bot.close()
 

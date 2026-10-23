@@ -103,7 +103,7 @@ python bot.py
 - `BOT_CONTACT_EMAIL`：Wikimedia 要求的机器人联系方式，只随 Wikipedia API 请求发送；日志和健康检查不会显示其值。
 - `INFO_CURATOR_SERVICE_URL`：固定内部 sidecar 地址；只允许 Compose 服务名或 loopback，禁止跳转和任意目标。
 - B站 Cookie 与视频模型凭据不再属于 Discord runtime；分别由 Media Transcriber 与 Info Curator 的 owner-only runtime 持有。
-- `/set_news_channel`、`/set_test_news_channel`、`/set_reading_channel`：设置推送频道。
+- `/set_news_channel`、`/set_test_news_channel`、`/set_reading_channel`、`/set_models_channel`：设置推送频道（思维模型未设置时沿用阅读频道）。
 - `/set_model`：切换 Gemini 模型。
 - `/health`：管理员查看 provider、定时任务、频道和 cooldown 状态。
 
@@ -115,6 +115,7 @@ python bot.py
 | --- | --- |
 | 每日英文阅读 | 07:30 |
 | 视野拾遗早刊 | 08:00 |
+| 今日思维模型（models.wuhua.app 今日一卡） | 08:00 |
 | AI/HN 日报 | 08:15 |
 | 综合新闻早报 | 08:45 |
 | 强电动态（默认美加） | 12:00 |

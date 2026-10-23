@@ -55,6 +55,13 @@ class SettingsCog(commands.Cog):
         settings.set_setting("READING_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将每日英文阅读推送频道设置为 {channel.mention}", ephemeral=True)
 
+    @app_commands.command(name="set_models_channel", description="[管理员] 设置今日思维模型推送的频道")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_models_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        settings.set_setting("MODELS_CHANNEL_ID", str(channel.id))
+        await interaction.followup.send(f"✅ 已将今日思维模型推送频道设置为 {channel.mention}", ephemeral=True)
+
     @app_commands.command(name="set_weather_channel", description="[管理员] 设置每日天气预报推送的频道")
     @app_commands.checks.has_permissions(administrator=True)
     async def set_weather_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
@@ -106,6 +113,13 @@ class SettingsCog(commands.Cog):
         else:
             weather_val = f"{format_channel('NEWS_CHANNEL_ID')} *(继承新闻)*"
 
+        models_cid = current.get("MODELS_CHANNEL_ID")
+        if models_cid:
+            mch = self.bot.get_channel(int(models_cid))
+            models_val = mch.mention if mch else f"`{models_cid}`"
+        else:
+            models_val = f"{format_channel('READING_CHANNEL_ID')} *(继承阅读)*"
+
         gaming_cid = current.get("GAMING_CHANNEL_ID")
         if gaming_cid:
             gch = self.bot.get_channel(int(gaming_cid))
@@ -123,6 +137,7 @@ class SettingsCog(commands.Cog):
                 f"- **综合新闻**: {format_channel('NEWS_CHANNEL_ID')}\n"
                 f"- **视野拾遗**: {format_channel('TEST_NEWS_CHANNEL_ID')}\n"
                 f"- **每日阅读**: {format_channel('READING_CHANNEL_ID')}\n"
+                f"- **思维模型**: {models_val}\n"
                 f"- **天气预报**: {weather_val}\n"
                 f"- **游戏特惠**: {gaming_val}"
             ),

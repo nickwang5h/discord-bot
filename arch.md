@@ -55,6 +55,7 @@
 │   ├── knowledge.py           # /recall、/review、知识库同步／清理与每周回看投递
 │   ├── inbox.py               # 收件箱：📥 保存、卡片与 /inbox
 │   ├── daily_reading.py       # 每日英文阅读
+│   ├── models_daily.py        # models.wuhua.app 今日一卡与小题
 │   ├── weather.py             # 每日天气定时播报与 /weather 查询
 │   ├── health.py              # /health 管理员诊断
 │   └── ...                    # 设置、生活和开发工具
@@ -608,6 +609,7 @@ provider key 同样使用独立 runtime，Bot 只收到已验证、无完整字�
 | 知识库清理与 vacuum | Knowledge | 每天 03:40 | 无 |
 | 每周回看 | Knowledge | 每天 09:00 触发，只在周一投递上一周 | 无 |
 | 英文阅读 / AI 日报 / 天气 | DailyReading / AIDaily / Weather | 07:30 / 08:15 / 07:00 | 有 / 有 / 无 |
+| 今日思维模型 | ModelsDaily | 08:00，取 UTC 当天的 `models.wuhua.app/today.json`，按 UTC 日期记入 `data/models_daily.json`，同日只推一次；频道 `MODELS_CHANNEL_ID`，未设置时用 `READING_CHANNEL_ID` | 无 |
 | Epic 喜加一 / Steam 折扣 | Gaming | 周四 11:30 / 每天 13:30 | 无 |
 
 `BOT_ENABLE_SCHEDULED_JOBS=false` 时以上 Loop 都不启动，手动命令照常可用。
