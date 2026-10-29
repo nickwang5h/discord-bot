@@ -410,7 +410,7 @@ attribution 解析出的 `_provider`、`_model`，写入运行发送意图与投
 `core.gaming` 与 `cogs.gaming` 提供零模型 Token 的自动化游戏降价与限免追踪：
 
 1. **Epic 每周限免**：每周四 11:30 (`America/Toronto`) 定时轮询 Epic 官方促销接口，提取本周免费领取名单、原价、截止时间及下周预告；采用 ISO 周去重缓存，每周至多发送一次至 `GAMING_CHANNEL_ID`（未设置时降级至 `NEWS_CHANNEL_ID`）；提供 `/epic_free` 交互查询。
-2. **Steam 愿望单降价监控**：每日 13:30 (`America/Toronto`) 通过免费 CheapShark REST API 轮询监控愿望单游戏，比对当前价格与历史最低价（`cheapestPriceEver`）；仅在游戏新打折或触及/打破历史史低时推送特惠 Embed；提供 `/deal <game>` 实时比价、`/watchlist` 查看愿望单、`/watch_game` 与 `/unwatch_game` 管理员增删接口。
+2. **Steam 史低与愿望单监控**：每日 13:30 (`America/Toronto`) 通过免费 CheapShark REST API 执行两项检查：其一，扫描 Steam 上正在打折、好评 ≥90%、评测 ≥1 万条的游戏（`/deals` 最多 50 页，再按 25 个一批用 `/games?ids=` 取 `cheapestPriceEver`），只保留当前价等于全网历史最低价的，按评测数排序，每次最多推送 10 个；其二，轮询管理员用 `/watch_game` 添加的愿望单（默认为空），在新打折、降价或触及史低时推送。两者共用 `gaming_deals_cache.json` 去重：同一游戏同一价格只推一次，30 天后同价再次出现（下一轮促销）会重新推送。另提供 `/deal <game>` 实时比价、`/watchlist` 查看愿望单、`/watch_game` 与 `/unwatch_game` 管理员增删接口。
 3. **独立频道隔离**：提供 `/set_gaming_channel` 绑定独立 `#gaming` 频道，保持内容分流。
 
 ## 6.7 推送反馈

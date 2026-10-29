@@ -10,10 +10,12 @@ from discord.ext import commands, tasks
 from config import SCHEDULED_JOBS_ENABLED, TZ
 from core import settings
 from core.gaming import (
+    HISTORIC_LOW_MAX_PER_RUN,
     add_to_watchlist,
     build_deal_embed,
     build_epic_free_embed,
     fetch_epic_free_games,
+    find_steam_historic_lows,
     get_game_deal_info,
     get_watchlist,
     record_notified_deal,
@@ -93,7 +95,7 @@ class Gaming(commands.Cog):
     async def before_epic_weekly(self):
         await self.bot.wait_until_ready()
 
-    # 每日 13:30 (美东时间) 检查 Steam 愿望单降价与史低变动
+    # 每日 13:30 (美东时间) 检查愿望单降价，并扫描 Steam 好评游戏的史低
     @tasks.loop(time=[datetime.strptime("13:30", "%H:%M").time().replace(tzinfo=TZ)])
     async def steam_daily(self):
         channel = self._get_target_channel()
@@ -112,14 +114,25 @@ class Gaming(commands.Cog):
                     if deal and should_notify_deal(deal):
                         notify_deals.append(deal)
                     await asyncio.sleep(0.5)  # 礼貌并发限速
-            return notify_deals
+                seen = {d.game_id for d in notify_deals}
+                lows = [
+                    d for d in await find_steam_historic_lows(session)
+                    if d.game_id not in seen and should_notify_deal(d)
+                ]
+            return notify_deals + lows[:HISTORIC_LOW_MAX_PER_RUN]
 
         async def deliver_deals(deals):
             if not deals:
                 return
+            watched = {str(item.get("game_id")) for item in get_watchlist()}
             for deal in deals:
                 embed = build_deal_embed(deal, is_broadcast=True)
-                prefix = "🔥 **愿望单史低特惠！**" if deal.is_historic_low else "🏷️ **愿望单降价通知：**"
+                if deal.game_id not in watched:
+                    prefix = "🔥 **Steam 好评游戏史低：**"
+                elif deal.is_historic_low:
+                    prefix = "🔥 **愿望单史低特惠！**"
+                else:
+                    prefix = "🏷️ **愿望单降价通知：**"
                 await channel.send(content=prefix, embed=embed)
                 record_notified_deal(deal)
                 await asyncio.sleep(1.0)

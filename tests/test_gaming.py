@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from config import TZ
 from core.gaming import (
-    DEFAULT_WATCHLIST,
     EpicGame,
     GameDealInfo,
     add_to_watchlist,
     build_deal_embed,
     build_epic_free_embed,
     fetch_epic_free_games,
+    find_steam_historic_lows,
     get_game_deal_info,
     get_watchlist,
     record_notified_deal,
@@ -225,9 +225,8 @@ class GamingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_store = JsonStore(Path(temp_dir) / "watchlist.json", list)
             with patch("core.gaming._watchlist_store", temp_store):
-                # 初始读取返回默认愿望单
-                items = get_watchlist()
-                self.assertTrue(len(items) >= 1)
+                # 初始愿望单为空，不再填入示例游戏
+                self.assertEqual(get_watchlist(), [])
 
                 # 添加新游戏
                 added = add_to_watchlist("Hades II", "300001", "1145320")
@@ -276,6 +275,10 @@ class GamingTests(unittest.TestCase):
                 # 记录后相同价格不应重复推送
                 self.assertFalse(should_notify_deal(deal))
 
+                # 同一价格 30 天后再次出现（下一轮促销），重新推送
+                temp_cache.update(lambda data: {**data, "999": {**data["999"], "notified_date": "2026-01-01"}})
+                self.assertTrue(should_notify_deal(deal))
+
     def test_epic_cache_and_notification_logic(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_cache = JsonStore(Path(temp_dir) / "epic_cache.json", dict)
@@ -303,3 +306,50 @@ class GamingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _routed_session(routes):
+    """A session whose get(url) answers with the first route whose key is in the url."""
+    def get(url, **kwargs):
+        body, headers = next(v for k, v in routes.items() if k in url)
+        response = AsyncMock()
+        response.status = 200
+        response.headers = headers
+        response.json = AsyncMock(return_value=body)
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=response)
+        context.__aexit__ = AsyncMock(return_value=False)
+        return context
+    session = MagicMock()
+    session.get.side_effect = get
+    return session
+
+
+class HistoricLowScanTests(unittest.TestCase):
+    def test_keeps_well_reviewed_games_at_their_all_time_low(self):
+        def row(game_id, title, price, reviews):
+            return {"gameID": game_id, "title": title, "salePrice": price, "normalPrice": "29.99",
+                    "savings": "70.0", "steamAppID": "1" + game_id, "dealID": "d" + game_id,
+                    "steamRatingText": "Overwhelmingly Positive", "steamRatingPercent": "97",
+                    "steamRatingCount": str(reviews), "metacriticScore": "0", "thumb": None}
+        session = _routed_session({
+            "pageNumber=0": ([row("1", "At Low", "8.99", 170000), row("2", "Above Low", "6.24", 77000),
+                              row("3", "Niche", "1.24", 772)], {"X-Total-Page-Count": "2"}),
+            "pageNumber=1": ([row("4", "Also Low", "4.99", 14000)], {"X-Total-Page-Count": "2"}),
+            "games?ids=": ({
+                "1": {"cheapestPriceEver": {"price": "8.99", "date": 1780000000}},
+                "2": {"cheapestPriceEver": {"price": "2.49", "date": 1780000000}},
+                "4": {"cheapestPriceEver": {"price": "4.99", "date": 1780000000}},
+            }, {}),
+        })
+
+        lows = asyncio.run(find_steam_historic_lows(session, pause_seconds=0))
+
+        self.assertEqual([d.title for d in lows], ["At Low", "Also Low"])
+        self.assertTrue(all(d.is_historic_low and d.store_name == "Steam" for d in lows))
+        self.assertEqual(lows[0].steam_rating_count, 170000)
+        self.assertIsNone(lows[0].metacritic_score)
+        self.assertTrue((lows[1].steam_url or "").endswith("/app/14"))
+        asked_ids = [c.args[0] for c in session.get.call_args_list if "games?ids=" in c.args[0]]
+        self.assertEqual(len(asked_ids), 1)
+        self.assertNotIn("3", asked_ids[0].split("ids=")[1].split(","))

@@ -29,12 +29,13 @@ CHEAPSHARK_STORES = {
     "31": "Blizzard",
 }
 
-DEFAULT_WATCHLIST = [
-    {"title": "Cyberpunk 2077", "game_id": "202350", "steam_app_id": "1091500"},
-    {"title": "Elden Ring", "game_id": "233379", "steam_app_id": "1245620"},
-    {"title": "Baldur's Gate 3", "game_id": "214041", "steam_app_id": "1086940"},
-    {"title": "Black Myth: Wukong", "game_id": "278278", "steam_app_id": "2358720"},
-]
+# 每日扫描 Steam 上正在打折的好评游戏，只推送当前价就是全网史低的那些。
+HISTORIC_LOW_MIN_RATING = 90
+HISTORIC_LOW_MIN_REVIEWS = 10_000
+HISTORIC_LOW_MAX_PAGES = 50
+HISTORIC_LOW_MAX_PER_RUN = 10
+# 同一价格隔这么久再次出现（通常是下一轮促销），重新推送一次。
+RENOTIFY_AFTER_DAYS = 30
 
 _watchlist_store = JsonStore(STATE_ROOT / "data/gaming_watchlist.json", list)
 _deals_cache_store = JsonStore(STATE_ROOT / "data/gaming_deals_cache.json", dict)
@@ -209,6 +210,100 @@ async def search_cheapshark_games(
     return data if isinstance(data, list) else []
 
 
+def _historic_low(sale_price: float, cheapest_price_ever: float | None) -> bool:
+    return cheapest_price_ever is not None and sale_price > 0 and sale_price <= cheapest_price_ever + 0.05
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+async def _get_json(session: aiohttp.ClientSession, url: str, timeout_seconds: float) -> tuple[Any, Any]:
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    async with session.get(url, headers=DEFAULT_HEADERS, timeout=timeout) as response:
+        if response.status != 200:
+            raise RuntimeError(f"CheapShark 返回状态码 {response.status}: {url}")
+        return await response.json(), response.headers
+
+
+async def find_steam_historic_lows(
+    session: aiohttp.ClientSession,
+    *,
+    min_rating: int = HISTORIC_LOW_MIN_RATING,
+    min_reviews: int = HISTORIC_LOW_MIN_REVIEWS,
+    max_pages: int = HISTORIC_LOW_MAX_PAGES,
+    pause_seconds: float = 1.0,
+    timeout_seconds: float = 20.0,
+) -> list[GameDealInfo]:
+    """扫描 Steam 正在打折的好评游戏，返回当前价等于全网历史最低价的，评测多的在前。"""
+    candidates: list[dict[str, Any]] = []
+    page, pages = 0, 1
+    while page < min(pages, max_pages):
+        url = (
+            "https://www.cheapshark.com/api/1.0/deals?storeID=1&onSale=1"
+            f"&steamRating={min_rating}&sortBy=Reviews&pageSize=60&pageNumber={page}"
+        )
+        rows, headers = await _get_json(session, url, timeout_seconds)
+        try:
+            pages = int(headers.get("X-Total-Page-Count", 1))
+        except (TypeError, ValueError):
+            pages = 1
+        if not isinstance(rows, list) or not rows:
+            break
+        candidates += [r for r in rows if (_optional_int(r.get("steamRatingCount")) or 0) >= min_reviews]
+        page += 1
+        await asyncio.sleep(pause_seconds)
+
+    lows: list[GameDealInfo] = []
+    by_id = {str(r.get("gameID")): r for r in candidates if r.get("gameID")}
+    ids = list(by_id)
+    for start in range(0, len(ids), 25):
+        batch = ids[start:start + 25]
+        games, _ = await _get_json(
+            session, f"https://www.cheapshark.com/api/1.0/games?ids={','.join(batch)}", timeout_seconds
+        )
+        for game_id in batch:
+            row = by_id[game_id]
+            low = ((games or {}).get(game_id) or {}).get("cheapestPriceEver") or {}
+            try:
+                cheapest = float(low["price"])
+                sale_price = float(row["salePrice"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not _historic_low(sale_price, cheapest):
+                continue
+            cheapest_date = None
+            if low.get("date"):
+                cheapest_date = datetime.fromtimestamp(int(low["date"]), tz=TZ).strftime("%Y-%m-%d")
+            steam_app_id = row.get("steamAppID")
+            lows.append(GameDealInfo(
+                game_id=game_id,
+                title=row.get("title", "未知游戏"),
+                steam_app_id=steam_app_id,
+                sale_price=sale_price,
+                normal_price=float(row.get("normalPrice", sale_price)),
+                savings_percent=float(row.get("savings", 0.0)),
+                cheapest_price_ever=cheapest,
+                cheapest_date=cheapest_date,
+                is_historic_low=True,
+                store_name="Steam",
+                deal_url=f"https://www.cheapshark.com/redirect?dealID={row['dealID']}" if row.get("dealID") else "",
+                steam_url=f"https://store.steampowered.com/app/{steam_app_id}" if steam_app_id else None,
+                thumb_url=row.get("thumb"),
+                steam_rating_text=row.get("steamRatingText"),
+                steam_rating_percent=_optional_int(row.get("steamRatingPercent")),
+                steam_rating_count=_optional_int(row.get("steamRatingCount")),
+                metacritic_score=_optional_int(row.get("metacriticScore")),
+            ))
+        await asyncio.sleep(pause_seconds)
+    lows.sort(key=lambda d: d.steam_rating_count or 0, reverse=True)
+    return lows
+
+
 async def get_game_deal_info(
     game_id: str,
     session: aiohttp.ClientSession,
@@ -262,11 +357,7 @@ async def get_game_deal_info(
     deal_url = f"https://www.cheapshark.com/redirect?dealID={deal_id}" if deal_id else ""
     steam_url = f"https://store.steampowered.com/app/{steam_app_id}" if steam_app_id else None
 
-    is_historic_low = (
-        cheapest_price_ever is not None
-        and sale_price > 0
-        and sale_price <= (cheapest_price_ever + 0.05)
-    )
+    is_historic_low = _historic_low(sale_price, cheapest_price_ever)
 
     steam_rating_text = best_deal.get("steamRatingText")
     steam_rating_percent = (
@@ -413,17 +504,14 @@ def build_deal_embed(
     if deal.thumb_url:
         embed.set_thumbnail(url=deal.thumb_url)
 
-    embed.set_footer(text="数据来源: CheapShark & Steam • 每日 13:30 自动监测愿望单变动")
+    embed.set_footer(text="数据来源: CheapShark & Steam • 每日 13:30 监测愿望单与好评游戏史低")
     return embed
 
 
 def get_watchlist() -> list[dict[str, str]]:
     """获取当前监控的愿望单游戏列表。"""
     data = _watchlist_store.read()
-    if not isinstance(data, list) or not data:
-        _watchlist_store.write(DEFAULT_WATCHLIST)
-        return list(DEFAULT_WATCHLIST)
-    return data
+    return data if isinstance(data, list) else []
 
 
 def add_to_watchlist(title: str, game_id: str, steam_app_id: str | None = None) -> bool:
@@ -477,6 +565,12 @@ def should_notify_deal(deal: GameDealInfo) -> bool:
         return True
 
     last_price = float(entry.get("last_price", 999999.0))
+    try:
+        notified = datetime.strptime(entry.get("notified_date", ""), "%Y-%m-%d").replace(tzinfo=TZ)
+    except ValueError:
+        return True
+    if (datetime.now(tz=TZ) - notified).days >= RENOTIFY_AFTER_DAYS:
+        return True
     if deal.sale_price < (last_price - 0.05):
         return True
     if deal.is_historic_low and not entry.get("was_historic_low", False):
