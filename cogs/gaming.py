@@ -13,6 +13,7 @@ from core.gaming import (
     HISTORIC_LOW_MAX_PER_RUN,
     add_to_watchlist,
     build_deal_embed,
+    build_deals_digest_embed,
     build_epic_free_embed,
     fetch_epic_free_games,
     find_steam_historic_lows,
@@ -119,23 +120,25 @@ class Gaming(commands.Cog):
                     d for d in await find_steam_historic_lows(session)
                     if d.game_id not in seen and should_notify_deal(d)
                 ]
-            return notify_deals + lows[:HISTORIC_LOW_MAX_PER_RUN]
+            if not notify_deals and not lows:
+                return None
+            return notify_deals, lows[:HISTORIC_LOW_MAX_PER_RUN]
 
-        async def deliver_deals(deals):
-            if not deals:
-                return
-            watched = {str(item.get("game_id")) for item in get_watchlist()}
-            for deal in deals:
-                embed = build_deal_embed(deal, is_broadcast=True)
-                if deal.game_id not in watched:
-                    prefix = "🔥 **Steam 好评游戏史低：**"
-                elif deal.is_historic_low:
-                    prefix = "🔥 **愿望单史低特惠！**"
-                else:
-                    prefix = "🏷️ **愿望单降价通知：**"
-                await channel.send(content=prefix, embed=embed)
+        async def deliver_deals(payload):
+            # 当天所有折扣合成一条消息：愿望单一张列表，好评史低一张列表。
+            watch_deals, lows = payload
+            embeds, included = [], []
+            for deals, title, mark_low in (
+                (watch_deals, "🏷️ 愿望单降价", True),
+                (lows, "🔥 Steam 好评游戏史低", False),
+            ):
+                if deals:
+                    embed, shown = build_deals_digest_embed(deals, title=title, mark_low=mark_low)
+                    embeds.append(embed)
+                    included += shown
+            await channel.send(content="🎮 **今日 Steam 折扣**", embeds=embeds)
+            for deal in included:
                 record_notified_deal(deal)
-                await asyncio.sleep(1.0)
 
         await run_delivery_job(
             lock=self._delivery_lock,

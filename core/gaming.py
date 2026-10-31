@@ -36,6 +36,8 @@ HISTORIC_LOW_MAX_PAGES = 50
 HISTORIC_LOW_MAX_PER_RUN = 10
 # 同一价格隔这么久再次出现（通常是下一轮促销），重新推送一次。
 RENOTIFY_AFTER_DAYS = 30
+# 每日推送合成一条消息；每张列表 Embed 的正文上限，两张加起来留在 Discord 6000 字符总限之内。
+DIGEST_MAX_CHARS = 2800
 
 _watchlist_store = JsonStore(STATE_ROOT / "data/gaming_watchlist.json", list)
 _deals_cache_store = JsonStore(STATE_ROOT / "data/gaming_deals_cache.json", dict)
@@ -506,6 +508,56 @@ def build_deal_embed(
 
     embed.set_footer(text="数据来源: CheapShark & Steam • 每日 13:30 监测愿望单与好评游戏史低")
     return embed
+
+
+def _compact_count(count: int) -> str:
+    return f"{count / 10_000:.1f} 万" if count >= 10_000 else f"{count:,}"
+
+
+def _digest_line(index: int, deal: GameDealInfo, mark_low: bool) -> str:
+    url = deal.steam_url or deal.deal_url
+    name = f"[{deal.title}]({url})" if url else deal.title
+    parts = [f"**{index}. {name}** — **${deal.sale_price:.2f}** ~~${deal.normal_price:.2f}~~ -{deal.savings_percent:.0f}%"]
+    if mark_low and deal.is_historic_low:
+        parts.append("🔥 史低")
+    elif mark_low and deal.cheapest_price_ever is not None:
+        parts.append(f"史低 ${deal.cheapest_price_ever:.2f}")
+    if deal.steam_rating_percent:
+        count = f"（{_compact_count(deal.steam_rating_count)}评测）" if deal.steam_rating_count else ""
+        parts.append(f"好评 {deal.steam_rating_percent}%{count}")
+    if deal.store_name != "Steam":
+        parts.append(deal.store_name)
+    return " · ".join(parts)
+
+
+def build_deals_digest_embed(
+    deals: list[GameDealInfo],
+    *,
+    title: str,
+    mark_low: bool,
+    max_chars: int = DIGEST_MAX_CHARS,
+) -> tuple[discord.Embed, list[GameDealInfo]]:
+    """把多条折扣合成一张紧凑列表 Embed，返回 Embed 与实际放进去的折扣（超长的留到下次）。"""
+    lines: list[str] = []
+    included: list[GameDealInfo] = []
+    used = 0
+    for deal in deals:
+        line = _digest_line(len(included) + 1, deal, mark_low)
+        if included and used + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        included.append(deal)
+        used += len(line) + 1
+    embed = discord.Embed(
+        title=f"{title} · {len(included)} 款",
+        description="\n".join(lines)[:4096],
+        color=discord.Color.green() if all(d.is_historic_low for d in included) else discord.Color.blue(),
+    )
+    thumb = next((d.thumb_url for d in included if d.thumb_url), None)
+    if thumb:
+        embed.set_thumbnail(url=thumb)
+    embed.set_footer(text="数据来源: CheapShark & Steam • 每日 13:30")
+    return embed, included
 
 
 def get_watchlist() -> list[dict[str, str]]:

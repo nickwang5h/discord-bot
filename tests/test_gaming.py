@@ -12,6 +12,7 @@ from core.gaming import (
     GameDealInfo,
     add_to_watchlist,
     build_deal_embed,
+    build_deals_digest_embed,
     build_epic_free_embed,
     fetch_epic_free_games,
     find_steam_historic_lows,
@@ -353,3 +354,47 @@ class HistoricLowScanTests(unittest.TestCase):
         asked_ids = [c.args[0] for c in session.get.call_args_list if "games?ids=" in c.args[0]]
         self.assertEqual(len(asked_ids), 1)
         self.assertNotIn("3", asked_ids[0].split("ids=")[1].split(","))
+
+
+class DealsDigestTests(unittest.TestCase):
+    @staticmethod
+    def _deal(game_id, title, *, low=True, store="Steam"):
+        return GameDealInfo(
+            game_id=game_id, title=title, steam_app_id="1" + game_id, sale_price=4.99,
+            normal_price=19.99, savings_percent=75.0, cheapest_price_ever=4.99 if low else 2.99,
+            cheapest_date=None, is_historic_low=low, store_name=store,
+            deal_url="https://www.cheapshark.com/redirect?dealID=d" + game_id,
+            steam_url=f"https://store.steampowered.com/app/1{game_id}", thumb_url=None,
+            steam_rating_text="Very Positive", steam_rating_percent=94, steam_rating_count=123456,
+            metacritic_score=None,
+        )
+
+    def test_many_deals_become_one_compact_list(self):
+        deals = [self._deal(str(i), f"Game {i}") for i in range(10)]
+        embed, included = build_deals_digest_embed(deals, title="🔥 Steam 好评游戏史低", mark_low=False)
+        self.assertEqual(included, deals)
+        self.assertIn("10 款", embed.title)
+        lines = embed.description.splitlines()
+        self.assertEqual(len(lines), 10)
+        self.assertIn("[Game 0](https://store.steampowered.com/app/10)", lines[0])
+        self.assertIn("$4.99", lines[0])
+        self.assertIn("-75%", lines[0])
+        self.assertIn("好评 94%（12.3 万评测）", lines[0])
+        self.assertNotIn("史低", lines[0])
+
+    def test_watchlist_lines_mark_low_and_store(self):
+        embed, _ = build_deals_digest_embed(
+            [self._deal("1", "A"), self._deal("2", "B", low=False, store="GOG")],
+            title="🏷️ 愿望单降价", mark_low=True,
+        )
+        first, second = embed.description.splitlines()
+        self.assertIn("🔥 史低", first)
+        self.assertIn("史低 $2.99", second)
+        self.assertIn("GOG", second)
+
+    def test_overflow_is_left_for_the_next_run(self):
+        deals = [self._deal(str(i), "X" * 200) for i in range(10)]
+        embed, included = build_deals_digest_embed(deals, title="t", mark_low=False, max_chars=1000)
+        self.assertLess(len(included), 10)
+        self.assertLessEqual(len(embed.description), 1000)
+        self.assertEqual(len(embed.description.splitlines()), len(included))
