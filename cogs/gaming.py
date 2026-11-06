@@ -10,21 +10,28 @@ from discord.ext import commands, tasks
 from config import SCHEDULED_JOBS_ENABLED, TZ
 from core import settings
 from core.gaming import (
+    DIGEST_MAX_CHARS,
+    DIGEST_TOTAL_CHARS,
     HISTORIC_LOW_MAX_PER_RUN,
+    NEW_HIT_MAX_PER_RUN,
     add_to_watchlist,
     build_deal_embed,
     build_deals_digest_embed,
     build_epic_free_embed,
+    build_new_hits_embed,
     fetch_epic_free_games,
     find_steam_historic_lows,
+    find_steam_new_hits,
     get_game_deal_info,
     get_watchlist,
     record_notified_deal,
+    record_new_hits,
     record_notified_epic,
     remove_from_watchlist,
     search_cheapshark_games,
     should_notify_deal,
     should_notify_epic,
+    should_notify_new_hit,
 )
 from core.jobs import run_delivery_job
 
@@ -96,7 +103,7 @@ class Gaming(commands.Cog):
     async def before_epic_weekly(self):
         await self.bot.wait_until_ready()
 
-    # 每日 13:30 (美东时间) 检查愿望单降价，并扫描 Steam 好评游戏的史低
+    # 每日 13:30 (美东时间) 检查愿望单降价，扫描 Steam 好评游戏的史低与新上架的高分游戏
     @tasks.loop(time=[datetime.strptime("13:30", "%H:%M").time().replace(tzinfo=TZ)])
     async def steam_daily(self):
         channel = self._get_target_channel()
@@ -120,25 +127,37 @@ class Gaming(commands.Cog):
                     d for d in await find_steam_historic_lows(session)
                     if d.game_id not in seen and should_notify_deal(d)
                 ]
-            if not notify_deals and not lows:
+                try:
+                    hits = [h for h in await find_steam_new_hits(session) if should_notify_new_hit(h)]
+                except Exception as error:  # 新游列表取不到不影响折扣推送
+                    logger.warning("Steam 新游好评扫描失败，本次跳过: %s", error)
+                    hits = []
+            if not notify_deals and not lows and not hits:
                 return None
-            return notify_deals, lows[:HISTORIC_LOW_MAX_PER_RUN]
+            return notify_deals, lows[:HISTORIC_LOW_MAX_PER_RUN], hits[:NEW_HIT_MAX_PER_RUN]
 
         async def deliver_deals(payload):
-            # 当天所有折扣合成一条消息：愿望单一张列表，好评史低一张列表。
-            watch_deals, lows = payload
-            embeds, included = [], []
-            for deals, title, mark_low in (
-                (watch_deals, "🏷️ 愿望单降价", True),
-                (lows, "🔥 Steam 好评游戏史低", False),
-            ):
-                if deals:
-                    embed, shown = build_deals_digest_embed(deals, title=title, mark_low=mark_low)
-                    embeds.append(embed)
-                    included += shown
-            await channel.send(content="🎮 **今日 Steam 折扣**", embeds=embeds)
-            for deal in included:
+            # 当天所有内容合成一条消息：愿望单、新游好评、好评史低各一张列表。
+            watch_deals, lows, hits = payload
+            embeds, deals_shown, hits_shown = [], [], []
+            budget = DIGEST_TOTAL_CHARS
+            for kind, items in (("watch", watch_deals), ("hits", hits), ("lows", lows)):
+                if not items or budget <= 200:
+                    continue
+                limit = min(DIGEST_MAX_CHARS, budget)
+                if kind == "hits":
+                    embed, shown = build_new_hits_embed(items, max_chars=limit)
+                    hits_shown += shown
+                else:
+                    title, mark_low = ("🏷️ 愿望单降价", True) if kind == "watch" else ("🔥 Steam 好评游戏史低", False)
+                    embed, shown = build_deals_digest_embed(items, title=title, mark_low=mark_low, max_chars=limit)
+                    deals_shown += shown
+                embeds.append(embed)
+                budget -= len(embed.description or "")
+            await channel.send(content="🎮 **今日 Steam**", embeds=embeds)
+            for deal in deals_shown:
                 record_notified_deal(deal)
+            record_new_hits(hits_shown)
 
         await run_delivery_job(
             lock=self._delivery_lock,

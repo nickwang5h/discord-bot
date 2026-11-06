@@ -14,16 +14,21 @@ from core.gaming import (
     build_deal_embed,
     build_deals_digest_embed,
     build_epic_free_embed,
+    build_new_hits_embed,
     fetch_epic_free_games,
     find_steam_historic_lows,
+    find_steam_new_hits,
     get_game_deal_info,
     get_watchlist,
+    parse_steam_search_rows,
+    record_new_hits,
     record_notified_deal,
     record_notified_epic,
     remove_from_watchlist,
     search_cheapshark_games,
     should_notify_deal,
     should_notify_epic,
+    should_notify_new_hit,
 )
 from core.storage import JsonStore
 
@@ -398,3 +403,78 @@ class DealsDigestTests(unittest.TestCase):
         self.assertLess(len(included), 10)
         self.assertLessEqual(len(embed.description), 1000)
         self.assertEqual(len(embed.description.splitlines()), len(included))
+
+
+def _steam_row(app_id, title, released, review):
+    tooltip = f'data-tooltip-html="Very Positive&lt;br&gt;{review} user reviews for this game are positive."' if review else ""
+    return (f'<a href="https://store.steampowered.com/app/{app_id}/x/" data-ds-appid="{app_id}" '
+            f'class="search_result_row ds_collapse_flag "><div class="search_capsule">'
+            f'<img src="https://shared.akamai.steamstatic.com/{app_id}.jpg" ></div>'
+            f'<span class="title">{title}</span><div class="search_released responsive_secondrow">'
+            f'  {released}  </div><span class="search_review_summary positive" {tooltip}></span>'
+            f'<div class="search_price_discount_combined" data-price-final="1749">'
+            f'<div class="discount_block" data-price-final="1749" data-discount="30"></div></div></a>')
+
+
+def _steam_session(pages):
+    """A session whose get() answers Steam search pages in order, as raw JSON bytes."""
+    bodies = iter(pages)
+
+    def get(url, **kwargs):
+        body = json.dumps({"success": 1, "results_html": next(bodies)}).encode()
+        response = AsyncMock()
+        response.status = 200
+        # Split in two chunks, then EOF, like a real stream.
+        response.content.read = AsyncMock(side_effect=[body[:40], body[40:], b""])
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=response)
+        context.__aexit__ = AsyncMock(return_value=False)
+        return context
+    session = MagicMock()
+    session.get.side_effect = get
+    return session
+
+
+class SteamNewHitTests(unittest.TestCase):
+    def test_parses_rows_and_skips_unrated_or_undated(self):
+        rows = parse_steam_search_rows(
+            _steam_row("1", "Tom &amp; Jerry", "Oct 30, 2026", "97% of the 1,972")
+            + _steam_row("2", "No Reviews", "Oct 30, 2026", None)
+            + _steam_row("3", "Soon", "Coming soon", "99% of the 900")
+        )
+        self.assertEqual(len(rows), 1)
+        hit = rows[0]
+        self.assertEqual((hit.app_id, hit.title, hit.rating_percent, hit.review_count), ("1", "Tom & Jerry", 97, 1972))
+        self.assertEqual((hit.price_cents, hit.discount_percent), (1749, 30))
+        self.assertEqual(hit.released.isoformat(), "2026-10-30")
+
+    def test_keeps_settled_high_rated_new_games_and_stops_past_the_window(self):
+        page0 = (_steam_row("1", "Too New", "Nov 4, 2026", "99% of the 3,000")
+                 + _steam_row("2", "Hit", "Oct 20, 2026", "96% of the 2,000")
+                 + _steam_row("3", "Few Reviews", "Oct 20, 2026", "99% of the 120")
+                 + _steam_row("4", "Mixed", "Oct 10, 2026", "80% of the 9,000"))
+        page1 = (_steam_row("5", "Best", "Sep 1, 2026", "98% of the 600")
+                 + _steam_row("6", "Too Old", "Jan 2, 2026", "99% of the 50,000"))
+        session = _steam_session([page0, page1, "unused"])
+        hits = asyncio.run(find_steam_new_hits(session, today=datetime(2026, 11, 6).date(), pause_seconds=0))
+        self.assertEqual([h.title for h in hits], ["Best", "Hit"])
+        self.assertEqual(session.get.call_count, 2)
+
+    def test_each_game_is_pushed_once(self):
+        hit = parse_steam_search_rows(_steam_row("7", "Once", "Oct 1, 2026", "97% of the 900"))[0]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JsonStore(Path(temp_dir) / "new_hits.json", dict)
+            store.write({"old": {"title": "Ancient", "notified_date": "2020-01-01"}})
+            with patch("core.gaming._new_hits_store", store):
+                self.assertTrue(should_notify_new_hit(hit))
+                record_new_hits([hit])
+                self.assertFalse(should_notify_new_hit(hit))
+                self.assertNotIn("old", store.read())
+
+    def test_new_hits_list_line(self):
+        hit = parse_steam_search_rows(_steam_row("8", "Line", "Oct 27, 2026", "97% of the 12,345"))[0]
+        embed, included = build_new_hits_embed([hit], today=datetime(2026, 11, 6).date())
+        self.assertEqual(included, [hit])
+        self.assertIn("1 款", embed.title)
+        self.assertEqual(embed.description, "**1. [Line](https://store.steampowered.com/app/8)** — "
+                                            "好评 97%（1.2 万评测） · 上架 10 天 · $17.49 -30%")

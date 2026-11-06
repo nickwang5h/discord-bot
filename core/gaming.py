@@ -1,8 +1,11 @@
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
+import html
+import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -39,9 +42,23 @@ RENOTIFY_AFTER_DAYS = 30
 # 每日推送合成一条消息；每张列表 Embed 的正文上限，两张加起来留在 Discord 6000 字符总限之内。
 DIGEST_MAX_CHARS = 2800
 
+# Steam “热门新品”里上架已有一阵、口碑稳定的高分新游；每款只推一次。
+NEW_HIT_MIN_AGE_DAYS = 7
+NEW_HIT_MAX_AGE_DAYS = 90
+NEW_HIT_MIN_RATING = 95
+NEW_HIT_MIN_REVIEWS = 500
+NEW_HIT_MAX_PAGES = 4  # 每页 50 款，按上架日期倒序，约覆盖 3–4 个月
+NEW_HIT_MAX_PER_RUN = 5
+NEW_HIT_FORGET_DAYS = 365
+STEAM_SEARCH_URL = "https://store.steampowered.com/search/results/"
+STEAM_SEARCH_MAX_BYTES = 2_000_000
+# 每日 Steam 消息里所有列表 Embed 正文合计上限，留在 Discord 单条 6000 字符之内。
+DIGEST_TOTAL_CHARS = 5400
+
 _watchlist_store = JsonStore(STATE_ROOT / "data/gaming_watchlist.json", list)
 _deals_cache_store = JsonStore(STATE_ROOT / "data/gaming_deals_cache.json", dict)
 _epic_cache_store = JsonStore(STATE_ROOT / "data/epic_free_cache.json", dict)
+_new_hits_store = JsonStore(STATE_ROOT / "data/gaming_new_hits.json", dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +92,22 @@ class GameDealInfo:
     steam_rating_percent: int | None
     steam_rating_count: int | None
     metacritic_score: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class NewGameHit:
+    app_id: str
+    title: str
+    released: date
+    rating_percent: int
+    review_count: int
+    price_cents: int | None
+    discount_percent: int
+    thumb_url: str | None
+
+    @property
+    def steam_url(self) -> str:
+        return f"https://store.steampowered.com/app/{self.app_id}"
 
 
 def _format_date(date_str: str | None) -> str:
@@ -306,6 +339,92 @@ async def find_steam_historic_lows(
     return lows
 
 
+_ROW_RE = re.compile(r'<a [^>]*class="search_result_row.*?</a>', re.S)
+_REVIEW_RE = re.compile(r'(\d{1,3})% of the ([\d,]+) user reviews')
+
+
+def _attr(block: str, name: str) -> str | None:
+    match = re.search(rf'{name}="([^"]*)"', block)
+    return html.unescape(match.group(1)) if match else None
+
+
+def parse_steam_search_rows(results_html: str) -> list[NewGameHit]:
+    """解析 Steam 商店搜索结果 HTML 的每一行；缺 appid、上架日期或评价的行跳过。"""
+    hits = []
+    for block in _ROW_RE.findall(results_html or ""):
+        app_id = _attr(block, "data-ds-appid")
+        title = re.search(r'<span class="title">(.*?)</span>', block, re.S)
+        released = re.search(r'search_released[^>]*>\s*(.*?)\s*</div>', block, re.S)
+        review = _REVIEW_RE.search(html.unescape(_attr(block, "data-tooltip-html") or ""))
+        if not (app_id and app_id.isdigit() and title and released and review):
+            continue
+        try:
+            day = datetime.strptime(released.group(1).strip(), "%b %d, %Y").date()
+        except ValueError:
+            continue  # “Coming soon”、只有年月等
+        price = _attr(block, "data-price-final")
+        discount = _attr(block, "data-discount")
+        image = re.search(r'<img src="([^"]+)"', block)
+        hits.append(NewGameHit(
+            app_id=app_id,
+            title=html.unescape(title.group(1)).strip()[:120],
+            released=day,
+            rating_percent=int(review.group(1)),
+            review_count=int(review.group(2).replace(",", "")),
+            price_cents=int(price) if price and price.isdigit() else None,
+            discount_percent=int(discount) if discount and discount.isdigit() else 0,
+            thumb_url=image.group(1) if image and image.group(1).startswith("https://") else None,
+        ))
+    return hits
+
+
+async def _get_steam_search_page(session: aiohttp.ClientSession, start: int, timeout_seconds: float) -> str:
+    params = {"filter": "popularnew", "sort_by": "Released_DESC", "category1": "998", "infinite": "1",
+              "start": str(start), "count": "50", "cc": "us", "l": "english"}
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    async with session.get(STEAM_SEARCH_URL, params=params, headers=DEFAULT_HEADERS, timeout=timeout,
+                           allow_redirects=False) as response:
+        if response.status != 200:
+            raise RuntimeError(f"Steam 搜索返回状态码 {response.status}")
+        # content.read(n) 只返回已到达的一块；循环读到结尾或超限。
+        body = b""
+        while chunk := await response.content.read(64 * 1024):
+            body += chunk
+            if len(body) > STEAM_SEARCH_MAX_BYTES:
+                raise RuntimeError("Steam 搜索结果过大")
+    data = json.loads(body)
+    return data.get("results_html", "") if isinstance(data, dict) and data.get("success") == 1 else ""
+
+
+async def find_steam_new_hits(
+    session: aiohttp.ClientSession,
+    *,
+    today: date | None = None,
+    min_age_days: int = NEW_HIT_MIN_AGE_DAYS,
+    max_age_days: int = NEW_HIT_MAX_AGE_DAYS,
+    min_rating: int = NEW_HIT_MIN_RATING,
+    min_reviews: int = NEW_HIT_MIN_REVIEWS,
+    max_pages: int = NEW_HIT_MAX_PAGES,
+    pause_seconds: float = 1.0,
+    timeout_seconds: float = 20.0,
+) -> list[NewGameHit]:
+    """Steam 热门新品中上架 min_age–max_age 天、好评率与评测数都够高的游戏，好评率高的在前。"""
+    today = today or datetime.now(tz=TZ).date()
+    hits: list[NewGameHit] = []
+    for page in range(max_pages):
+        rows = parse_steam_search_rows(await _get_steam_search_page(session, page * 50, timeout_seconds))
+        hits += [
+            row for row in rows
+            if min_age_days <= (today - row.released).days <= max_age_days
+            and row.rating_percent >= min_rating and row.review_count >= min_reviews
+        ]
+        if not rows or min(row.released for row in rows) < today - timedelta(days=max_age_days):
+            break
+        await asyncio.sleep(pause_seconds)
+    unique = {hit.app_id: hit for hit in reversed(hits)}
+    return sorted(unique.values(), key=lambda h: (h.rating_percent, h.review_count), reverse=True)
+
+
 async def get_game_deal_info(
     game_id: str,
     session: aiohttp.ClientSession,
@@ -530,6 +649,26 @@ def _digest_line(index: int, deal: GameDealInfo, mark_low: bool) -> str:
     return " · ".join(parts)
 
 
+def _list_embed(items: list, lines, *, title: str, color: discord.Color, max_chars: int,
+                thumb_url: str | None) -> tuple[discord.Embed, list]:
+    """一张编号列表 Embed：按顺序放到 max_chars 为止，返回 Embed 与实际放进去的条目。"""
+    kept: list[str] = []
+    included: list = []
+    used = 0
+    for item in items:
+        line = lines(len(included) + 1, item)
+        if included and used + len(line) + 1 > max_chars:
+            break
+        kept.append(line)
+        included.append(item)
+        used += len(line) + 1
+    embed = discord.Embed(title=f"{title} · {len(included)} 款", description="\n".join(kept)[:4096], color=color)
+    if thumb_url:
+        embed.set_thumbnail(url=thumb_url)
+    embed.set_footer(text="数据来源: CheapShark & Steam • 每日 13:30")
+    return embed, included
+
+
 def build_deals_digest_embed(
     deals: list[GameDealInfo],
     *,
@@ -538,26 +677,37 @@ def build_deals_digest_embed(
     max_chars: int = DIGEST_MAX_CHARS,
 ) -> tuple[discord.Embed, list[GameDealInfo]]:
     """把多条折扣合成一张紧凑列表 Embed，返回 Embed 与实际放进去的折扣（超长的留到下次）。"""
-    lines: list[str] = []
-    included: list[GameDealInfo] = []
-    used = 0
-    for deal in deals:
-        line = _digest_line(len(included) + 1, deal, mark_low)
-        if included and used + len(line) + 1 > max_chars:
-            break
-        lines.append(line)
-        included.append(deal)
-        used += len(line) + 1
-    embed = discord.Embed(
-        title=f"{title} · {len(included)} 款",
-        description="\n".join(lines)[:4096],
-        color=discord.Color.green() if all(d.is_historic_low for d in included) else discord.Color.blue(),
+    return _list_embed(
+        deals, lambda index, deal: _digest_line(index, deal, mark_low), title=title, max_chars=max_chars,
+        color=discord.Color.green() if all(d.is_historic_low for d in deals) else discord.Color.blue(),
+        thumb_url=next((d.thumb_url for d in deals if d.thumb_url), None),
     )
-    thumb = next((d.thumb_url for d in included if d.thumb_url), None)
-    if thumb:
-        embed.set_thumbnail(url=thumb)
-    embed.set_footer(text="数据来源: CheapShark & Steam • 每日 13:30")
-    return embed, included
+
+
+def _new_hit_line(index: int, hit: NewGameHit, today: date) -> str:
+    parts = [f"**{index}. [{hit.title}]({hit.steam_url})** — 好评 {hit.rating_percent}%（{_compact_count(hit.review_count)}评测）",
+             f"上架 {(today - hit.released).days} 天"]
+    if hit.price_cents == 0:
+        parts.append("免费")
+    elif hit.price_cents is not None:
+        price = f"${hit.price_cents / 100:.2f}"
+        parts.append(f"{price} -{hit.discount_percent}%" if hit.discount_percent else price)
+    return " · ".join(parts)
+
+
+def build_new_hits_embed(
+    hits: list[NewGameHit],
+    *,
+    today: date | None = None,
+    max_chars: int = DIGEST_MAX_CHARS,
+) -> tuple[discord.Embed, list[NewGameHit]]:
+    """新上架高分游戏的紧凑列表 Embed，返回 Embed 与实际放进去的游戏。"""
+    today = today or datetime.now(tz=TZ).date()
+    return _list_embed(
+        hits, lambda index, hit: _new_hit_line(index, hit, today), title="🌟 Steam 新游好评",
+        color=discord.Color.gold(), max_chars=max_chars,
+        thumb_url=next((h.thumb_url for h in hits if h.thumb_url), None),
+    )
 
 
 def get_watchlist() -> list[dict[str, str]]:
@@ -685,3 +835,29 @@ def record_notified_epic(active_games: list[EpicGame]) -> None:
         return data
 
     _epic_cache_store.update(mutator)
+
+
+def should_notify_new_hit(hit: NewGameHit) -> bool:
+    cache = _new_hits_store.read()
+    return not (isinstance(cache, dict) and hit.app_id in cache)
+
+
+def record_new_hits(hits: list[NewGameHit]) -> None:
+    """记录已推送的新游；超过 NEW_HIT_FORGET_DAYS 的旧记录顺手清掉，文件不会无限增长。"""
+    today = datetime.now(tz=TZ).date()
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        data = data if isinstance(data, dict) else {}
+        for hit in hits:
+            data[hit.app_id] = {"title": hit.title, "notified_date": today.isoformat()}
+        keep = {}
+        for app_id, entry in data.items():
+            try:
+                notified = date.fromisoformat(entry.get("notified_date", ""))
+            except (AttributeError, ValueError):
+                continue
+            if (today - notified).days <= NEW_HIT_FORGET_DAYS:
+                keep[app_id] = entry
+        return keep
+
+    _new_hits_store.update(mutator)
