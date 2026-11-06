@@ -137,6 +137,18 @@ class PayloadTests(unittest.TestCase):
         self.assertIsNone(payload.url)
         self.assertEqual(payload.summary, "储能招标和电价的关系要查一下")
 
+    def test_bot_layout_card_text_comes_from_its_components(self):
+        card = SimpleNamespace(type=17, children=[
+            SimpleNamespace(content="## 📌 我的订阅 · 早间\n你自己的信源里，这一期值得看的。", children=None),
+            SimpleNamespace(content="① **[渥太华轻轨东段延期](https://example.com/lrt)**\n摘要", children=None),
+            SimpleNamespace(content=None, children=[SimpleNamespace(content=None, children=None)]),
+        ])
+        msg = SimpleNamespace(content="", author=SimpleNamespace(bot=True), embeds=[], components=[card])
+        payload = payload_from_message(msg)
+        self.assertEqual(payload.url, "https://example.com/lrt")
+        self.assertEqual(payload.title, "📌 我的订阅 · 早间")
+        self.assertIn("渥太华轻轨东段延期", payload.summary)
+
     def test_bot_summary_card_takes_the_link_from_the_message_it_answered(self):
         card = message(bot=True, embeds=[embed("🔗 网页内容总结", "- 要点一\n- 要点二")])
         payload = payload_from_message(card, message("看看 https://example.com/b"))

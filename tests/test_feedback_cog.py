@@ -54,7 +54,7 @@ class CustomIdTests(unittest.IsolatedAsyncioTestCase):
         pattern = re.compile(TEMPLATE)
         for good in ('fb:n:12:0:new', 'fb:w:3:4:save', 'fb:n:0:9:skip'):
             self.assertTrue(pattern.match(good), good)
-        for bad in ('fb:x:12:0:new', 'fb:n:-1:0:new', 'fb:n:12:10:new', 'fb:n:12:0:like',
+        for bad in ('fb:x:12:0:new', 'fb:n:-1:0:new', 'fb:n:12:100:new', 'fb:n:12:0:like',
                     'fb:n:12:0:newx', 'xfb:n:1:0:new', 'fb:n::0:new'):
             self.assertIsNone(pattern.match(bad), bad)
 
@@ -62,8 +62,10 @@ class CustomIdTests(unittest.IsolatedAsyncioTestCase):
         match = re.compile(TEMPLATE).match('fb:n:12:3:known')
         button = await FeedbackButton.from_custom_id(None, None, match)
         self.assertEqual((button.kind, button.ref, button.index, button.value), ('n', 12, 3, 'known'))
+        later = await FeedbackButton.from_custom_id(None, None, re.compile(TEMPLATE).match('fb:n:12:9:new'))
+        self.assertEqual(later.index, 9)  # layout messages carry up to ten items
         with self.assertRaises(ValueError):
-            await FeedbackButton.from_custom_id(None, None, re.compile(TEMPLATE).match('fb:n:12:7:new'))
+            await FeedbackButton.from_custom_id(None, None, re.compile(TEMPLATE).match('fb:n:12:10:new'))
 
     async def test_view_has_one_row_of_four_per_item_capped_at_five(self):
         view = view_for('run', 42, 7)
@@ -325,3 +327,25 @@ class LifecycleTests(CogFixture):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LayoutRedrawTests(unittest.TestCase):
+    """A components-v2 message is rebuilt as sent; only the button colours change."""
+
+    def test_restyle_keeps_text_and_colours_the_selected_buttons(self):
+        from discord.components import _component_factory
+
+        from cogs.feedback import item_row, restyle
+        from core.news.pipeline import layout_view
+
+        page = [('## 📌 我的订阅 · 早间', None), ('① 第一条', 0), ('② 第二条', 1), ('-# ✨ Powered by Test', None)]
+        sent = layout_view(page, 42, lambda run, index: item_row('run', run, index))
+        message = SimpleNamespace(components=[_component_factory(c) for c in sent.to_components()])
+        rebuilt = restyle(discord.ui.LayoutView.from_message(message, timeout=None),
+                          {1: {'verdict': 'skip', 'saved': True}})
+        card = rebuilt.to_components()[0]
+        self.assertEqual([c['content'] for c in card['components'] if c['type'] == 10], [text for text, _ in page])
+        selected = [b['custom_id'] for c in card['components'] if c['type'] == 1 for b in c['components']
+                    if b['style'] == discord.ButtonStyle.success.value]
+        self.assertEqual(selected, ['fb:n:42:1:skip', 'fb:n:42:1:save'])
+        self.assertEqual(card.get('accent_color'), sent.to_components()[0].get('accent_color'))

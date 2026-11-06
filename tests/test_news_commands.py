@@ -97,10 +97,11 @@ class NewsFeedbackWiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_factory_builds_run_buttons_for_personal_topics_only(self):
         self.assertIsNone(self.cog._view_factory(self.general))
         self.assertIsNone(self.cog._view_factory(Subscription('d', 'discovery', ('discovery',), ('08:00',), 1)))
-        with patch('cogs.feedback.view_for', return_value='VIEW') as view_for:
+        # Following is a layout topic: the factory gives the row under one item.
+        with patch('cogs.feedback.item_row', return_value='ROW') as item_row:
             factory = self.cog._view_factory(self.following)
-            self.assertEqual(factory(7, 3), 'VIEW')
-        view_for.assert_called_once_with('run', 7, 3)
+            self.assertEqual(factory(7, 3), 'ROW')
+        item_row.assert_called_once_with('run', 7, 3)
         self.feedback = None
         self.assertIsNone(self.cog._view_factory(self.following))
 

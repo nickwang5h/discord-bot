@@ -46,6 +46,9 @@ class SelectionInput:
 class Edition:
     embeds: list
     selected: list[dict]
+    # Layout topics (components v2): one entry per Discord message, each a list of
+    # (markdown text, item index or None) blocks; `embeds` is then empty.
+    pages: list | None = None
 
 
 def bind_evidence(candidates, articles):

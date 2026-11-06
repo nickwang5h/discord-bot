@@ -12,7 +12,7 @@ from config import SCHEDULED_JOBS_ENABLED, STATE_ROOT, TZ
 from core import settings
 from core.feedback import profile as reader_profile
 from core.news import personal
-from core.news.pipeline import NewsPipeline
+from core.news.pipeline import NewsPipeline, layout_view
 from core.news.sources import SHARED_NAMES, personal_entries
 from core.news.store import NewsStore
 from core.news.subscriptions import edition_name, load_subscriptions, period_for
@@ -110,8 +110,11 @@ class News(commands.Cog):
         topic = TOPICS.get(subscription.topic)
         if not getattr(topic, 'personal', False) or self.bot.get_cog('Feedback') is None:
             return None
-        from cogs.feedback import view_for
+        from cogs.feedback import item_row, view_for
 
+        if getattr(topic, 'layout', False):
+            # Layout editions ask for the row under each item, not one view for the message.
+            return lambda run_id, index: item_row('run', run_id, index)
         return lambda run_id, count: view_for('run', run_id, count)
 
     def _subscription(self, identity):
@@ -144,6 +147,11 @@ class News(commands.Cog):
         period = period_for(subscription, datetime.datetime.now(TZ))
         if preview:
             edition = await self.pipeline.preview(subscription, period)
+            if edition and edition.pages is not None:
+                for page in edition.pages:  # Preview pages carry no feedback buttons.
+                    await interaction.followup.send(view=layout_view(page, 0, None), ephemeral=True,
+                                                    allowed_mentions=discord.AllowedMentions.none())
+                return
             if edition:
                 await interaction.followup.send(embeds=edition.embeds, ephemeral=True,
                                                 allowed_mentions=discord.AllowedMentions.none())

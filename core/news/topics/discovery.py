@@ -24,12 +24,18 @@ from core.news.topics.ranking import rank
 from core.utils import create_ai_embed
 
 MAX_CANDIDATES = 40
-MAX_RECOMMENDATIONS = 5  # Reading and message capacity, not a selection quota.
+MAX_RECOMMENDATIONS = 10  # Reading and message capacity, not a selection quota.
 MAX_CONTENT_CHARS = 600
 MAX_AGE_SECONDS = 3 * 86400
-MAX_OUTPUT_TOKENS = 3000
+MAX_OUTPUT_TOKENS = 6000  # Default budget of these topics' subscriptions (ten items).
 MAX_DESCRIPTION_CHARS = 3800
-NUMBERS = "①②③④⑤"  # Same marks as the feedback buttons (cogs/feedback.py).
+MAX_MESSAGE_CHARS = 5800  # Every embed of one message together (Discord allows 6000).
+ITEMS_PER_EMBED = 5
+# Following: items per message. Each item takes a text block, an action row and four
+# buttons (6 of Discord's 40 components); five keep a message well inside the limit.
+ITEMS_PER_PAGE = 5
+MAX_PAGE_CHARS = 3800  # Text of one components-v2 message (Discord allows 4000).
+NUMBERS = "①②③④⑤⑥⑦⑧⑨⑩"  # Same marks as the feedback buttons (cogs/feedback.py).
 MAX_PERSONAL_INPUT_CHARS = 30000  # CLAUDE_ROUTES['personal.following'].max_input_chars
 MAX_TAGS = 3
 MIN_TAG_CHARS, MAX_TAG_CHARS = 2, 12
@@ -189,12 +195,12 @@ def _normalize_recommendations(text, candidates, *, with_tags=False):
     return selected
 
 
-def _render_recommendations(items, intro=DISCOVERY_INTRO, *, numbered=False):
+def _recommendation_blocks(items, *, numbered=False, start=0):
     def plain(value):
         return discord.utils.escape_markdown(value).replace("@", "＠").replace("[", "［").replace("]", "］")
 
     blocks = []
-    for index, item in enumerate(items):
+    for index, item in enumerate(items, start):
         date = item["published_at"][:10] if item["published_at"] else "日期未提供"
         # Button i acts on payload position i: numbering follows the list order exactly.
         mark = f"{NUMBERS[index]} " if numbered else ""
@@ -204,7 +210,11 @@ def _render_recommendations(items, intro=DISCOVERY_INTRO, *, numbered=False):
             + (f"**值得一读**：{plain(item['why_read'])}\n" if item.get("why_read") else "")
             + f"— {plain(item['publisher'])} · {date}"
         )
-    body = intro + "\n\n" + "\n\n".join(blocks)
+    return blocks
+
+
+def _render_recommendations(items, intro=DISCOVERY_INTRO, *, numbered=False, start=0):
+    body = "\n\n".join(([intro] if intro else []) + _recommendation_blocks(items, numbered=numbered, start=start))
     if len(body) > MAX_DESCRIPTION_CHARS:
         raise ValueError("探索阅读超过整条消息容量")
     return body
@@ -212,9 +222,11 @@ def _render_recommendations(items, intro=DISCOVERY_INTRO, *, numbered=False):
 
 class DiscoveryTopic:
     name = "discovery"
-    version = "2"
+    version = "3"
     personal = False
     numbered = False
+    layout = False
+    max_output_tokens = MAX_OUTPUT_TOKENS
     max_age = MAX_AGE_SECONDS
     heading = "🧭 视野拾遗"
     intro = DISCOVERY_INTRO
@@ -229,7 +241,7 @@ class DiscoveryTopic:
         "优先日常头条与技术发布之外的解释和发现。既有兴趣不是相关性门槛；"
         "同一事件只选一条，与 already_recommended 重复的事件不再推荐。"
         "同链接内容有变化不等于新消息；确有新的结果或观察才可选择，摘要须以‘新进展：’开头并指出新增事实。"
-        "最多5条但不凑数，可返回空列表，不设领域配额，不给分数、不写趋势导语。"
+        "最多10条但不凑数，可返回空列表，不设领域配额，不给分数、不写趋势导语。"
         "title 为40字符以内的自然中文标题；summary 为160字符以内、普通读者能理解的"
         "原文事实概述，不假装读过全文；why_read 为120字符以内的具体阅读价值，"
         "不能只是重复摘要或声称有启发。" + factcheck.PERSON_NAME_RULE + "若提出联想或待思考的问题，明确使用‘可以想一想’"
@@ -275,11 +287,29 @@ class DiscoveryTopic:
         return fingerprint([item["url"], item["_version"]])
 
     def render(self, selected, edition, attribution):
-        embed = create_ai_embed(title=f"{self.heading} · {edition}",
-                                description=_render_recommendations(selected, self.intro, numbered=self.numbered),
-                                color=discord.Color.purple())
-        embed.set_footer(text=f"✨ Powered by {attribution}")
-        return [embed]
+        embeds = []
+        for start in range(0, len(selected), ITEMS_PER_EMBED):
+            embed = create_ai_embed(
+                title=f"{self.heading} · {edition}" if not start else f"{self.heading} · {edition}（续）",
+                description=_render_recommendations(selected[start:start + ITEMS_PER_EMBED],
+                                                    "" if start else self.intro, numbered=self.numbered, start=start),
+                color=discord.Color.purple())
+            embed.remove_footer()  # One footer, on the last embed only.
+            embeds.append(embed)
+        embeds[-1].set_footer(text=f"✨ Powered by {attribution}")
+        if sum(len(embed) for embed in embeds) > MAX_MESSAGE_CHARS:
+            raise ValueError("探索阅读超过整条消息容量")
+        return embeds
+
+    def fit(self, selected, edition, attribution):
+        """The longest prefix of `selected` that renders; the rest can be picked again later."""
+        while len(selected) > 1:
+            try:
+                self.render(selected, edition, attribution)
+                return selected
+            except ValueError:
+                selected = selected[:-1]
+        return selected
 
 
 def _strong_skip(profile, tag):
@@ -314,8 +344,10 @@ class FollowingTopic(DiscoveryTopic):
     profile goes into the prompt, the model adds topic tags, and selection may use Claude.
     """
     name = "following"
-    version = "4"
+    version = "5"
     personal = True
+    # Sent as components-v2 messages: every item is followed directly by its own buttons.
+    layout = True
     route = "personal.following"
     numbered = True
     dedupe_titles = True
@@ -338,7 +370,7 @@ class FollowingTopic(DiscoveryTopic):
         "不能拿来补写事实。known_topics 是读者已熟悉的主题，除非有实质新事实（摘要以‘新进展：’开头"
         "并写出新增事实）否则不选；fresh_topics 是读者觉得新的领域，同等质量下优先；"
         "not_interested 不选；source_novelty 是各来源对读者的新鲜程度，仅供参考。"
-        "最多5条但不凑数，可返回空列表，不给分数。"
+        "最多10条但不凑数，可返回空列表，不给分数。"
         "title 为40字符以内的自然中文标题；summary 为160字符以内的内容概述，"
         "不假装看过视频或读过全文；why_read 为120字符以内的具体理由，不能只是重复摘要。"
         + factcheck.PERSON_NAME_RULE +
@@ -388,6 +420,17 @@ class FollowingTopic(DiscoveryTopic):
             per_item = len(_dump(public)) / len(candidates)
             limit = max(1, len(candidates) - max(1, math.ceil((size - MAX_PERSONAL_INPUT_CHARS) / per_item)))
         return SelectionInput(candidates, model_input, self.system)
+
+    def render(self, selected, edition, attribution):
+        """Pages of (markdown, item index | None) blocks, one page per Discord message."""
+        blocks = _recommendation_blocks(selected, numbered=True)
+        pages = [[(block, index) for index, block in enumerate(blocks[start:start + ITEMS_PER_PAGE], start)]
+                 for start in range(0, len(blocks), ITEMS_PER_PAGE)]
+        pages[0].insert(0, (f"## {self.heading} · {edition}\n{self.intro}", None))
+        pages[-1].append((f"-# ✨ Powered by {attribution}", None))
+        if any(sum(len(text) for text, _ in page) > MAX_PAGE_CHARS for page in pages):
+            raise ValueError("我的订阅超过单条消息容量")
+        return pages
 
     def validate(self, text, candidates, subscription, history, *, profile=None):
         selected = _normalize_recommendations(text, candidates, with_tags=True)

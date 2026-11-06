@@ -283,8 +283,10 @@ class FeedbackStore:
             snap = snapshot(item)
             if snap is None:
                 continue
+            # A run sent as several messages records each item's own message in its payload.
+            item_message = item['_message_id'] if '_message_id' in item else message_id
             new += self._expose(snap, ref_kind='run', ref_id=run_id, subscription=subscription, personal=personal,
-                                channel_id=channel_id, message_id=message_id, position=position,
+                                channel_id=channel_id, message_id=item_message, position=position,
                                 item_count=len(items), shown_at=shown_at)
         return new
 

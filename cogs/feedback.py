@@ -8,6 +8,7 @@ shared channels never receive a reaction or reply from the bot.
 """
 import asyncio
 import logging
+import re
 import threading
 import time
 
@@ -25,14 +26,15 @@ from core.news.topics import TOPICS
 
 logger = logging.getLogger(__name__)
 
-TEMPLATE = r'^fb:(?P<k>[nw]):(?P<ref>\d+):(?P<i>\d):(?P<v>new|known|skip|save)$'
+TEMPLATE = r'^fb:(?P<k>[nw]):(?P<ref>\d+):(?P<i>\d{1,2}):(?P<v>new|known|skip|save)$'
 KINDS = {'n': 'run', 'w': 'watch'}
 LETTERS = {'n': 'n', 'w': 'w', 'run': 'n', 'watch': 'w'}
 VALUES = ('new', 'known', 'skip', 'save')
 VALUE_EMOJI = {'new': '🆕', 'known': '👌', 'skip': '🚫', 'save': '📥'}
 REACTIONS = {'🆕': 'new', '👌': 'known', '🚫': 'skip'}
-NUMBERS = '①②③④⑤'
+NUMBERS = '①②③④⑤⑥⑦⑧⑨⑩'
 MAX_ROWS = 5                # one row of four buttons per item; Discord allows five rows
+MAX_ITEMS = 10              # layout messages put each item's row under the item itself
 STATS_ROWS = 15
 BY_CHOICES = {'source': '来源', 'board': '板块', 'tag': '标签'}
 
@@ -48,13 +50,13 @@ class FeedbackButton(discord.ui.DynamicItem[discord.ui.Button], template=TEMPLAT
                 style=discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary,
                 custom_id=f'fb:{kind}:{self.ref}:{self.index}:{value}',
             ),
-            row=self.index,
+            row=self.index if self.index < MAX_ROWS else None,
         )
 
     @classmethod
     async def from_custom_id(cls, interaction, item, match, /):
         index = int(match['i'])
-        if index >= MAX_ROWS:
+        if index >= MAX_ITEMS:
             raise ValueError('按钮序号超出范围')
         return cls(match['k'], int(match['ref']), index, match['v'])
 
@@ -83,6 +85,32 @@ def view_for(kind, ref, count, state=None):
         for value in VALUES:
             selected = bool(current.get('saved')) if value == 'save' else current.get('verdict') == value
             view.add_item(FeedbackButton(letter, ref, index, value, selected=selected))
+    return view
+
+
+def item_row(kind, ref, index, state=None):
+    """The four buttons of item `index`, as one row to place right under that item."""
+    if not 0 <= int(index) < MAX_ITEMS:
+        return None
+    current = (state or {}).get(index) or {}
+    row = discord.ui.ActionRow()
+    for value in VALUES:
+        selected = bool(current.get('saved')) if value == 'save' else current.get('verdict') == value
+        row.add_item(FeedbackButton(LETTERS[kind], ref, index, value, selected=selected))
+    return row
+
+
+def restyle(view, state):
+    """Recolour the feedback buttons of a view rebuilt from a message; returns the view."""
+    for child in view.walk_children():
+        button = child.item if isinstance(child, discord.ui.DynamicItem) else child
+        match = re.match(TEMPLATE, getattr(button, 'custom_id', None) or '')
+        if not isinstance(button, discord.ui.Button) or match is None:
+            continue
+        current = state.get(int(match['i'])) or {}
+        value = match['v']
+        selected = bool(current.get('saved')) if value == 'save' else current.get('verdict') == value
+        button.style = discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary
     return view
 
 
@@ -206,8 +234,13 @@ class Feedback(commands.Cog):
     async def _redraw(self, interaction, kind, ref, items, *, deferred):
         try:
             state = await asyncio.to_thread(self._state, items)
-            count = max([item.get('item_count') or 0 for item in items] + [len(items)])
-            view = view_for(kind, ref, count, state)
+            message = interaction.message
+            if getattr(getattr(message, "flags", None), "components_v2", False) is True:
+                # The text lives in the components: rebuild the message as sent, recolour buttons.
+                view = restyle(discord.ui.LayoutView.from_message(message, timeout=None), state)
+            else:
+                count = max([item.get('item_count') or 0 for item in items] + [len(items)])
+                view = view_for(kind, ref, count, state)
             if deferred:
                 await interaction.edit_original_response(view=view)
             else:

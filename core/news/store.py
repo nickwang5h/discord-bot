@@ -163,7 +163,10 @@ class NewsStore:
             if updated.rowcount != 1:
                 raise RuntimeError('新闻投递状态冲突')
 
-    def complete(self, run_id, message_id, *, status='delivered'):
+    def complete(self, run_id, message_id, *, status='delivered', item_messages=None):
+        """Record a run's send. `message_id` is the (first) message; `item_messages`, for runs
+        sent as several messages, gives each item's own message id in payload order, None for
+        an item whose message was never sent (recorded as skipped, so it is never resent)."""
         if status not in {'delivered', 'skipped'}:
             raise ValueError('Invalid resolution')
         with self.db:
@@ -171,13 +174,22 @@ class NewsStore:
             if row is None or row['status'] not in {'sending', 'uncertain'}:
                 raise ValueError('只能确认待核查的发送')
             now = time.time()
-            for item in json.loads(row['payload']):
+            payload = json.loads(row['payload'])
+            if item_messages is not None and len(item_messages) != len(payload):
+                raise ValueError('条目与消息数量不一致')
+            for position, item in enumerate(payload):
+                item_status, item_message = status, message_id
+                if item_messages is not None:
+                    item_message = item_messages[position]
+                    item['_message_id'] = str(item_message) if item_message else None
+                    item_status = status if item_message else 'skipped'
                 self.db.execute('INSERT OR IGNORE INTO deliveries VALUES (?,?,?,?,?,?,?,?,?,?)',
                     (row['subscription'], item['_delivery_key'], item['url'], item['_version'],
-                     run_id, row['channel_id'], str(message_id) if message_id else None, status,
+                     run_id, row['channel_id'], str(item_message) if item_message else None, item_status,
                      json.dumps(item, ensure_ascii=False), now))
-            self.db.execute('UPDATE runs SET status=?,message_id=?,updated_at=? WHERE id=?',
-                            (status, str(message_id) if message_id else None, now, run_id))
+            self.db.execute('UPDATE runs SET status=?,message_id=?,payload=?,updated_at=? WHERE id=?',
+                            (status, str(message_id) if message_id else None,
+                             json.dumps(payload, ensure_ascii=False), now, run_id))
 
     def get_run(self, run_id):
         row = self.db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()

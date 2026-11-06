@@ -19,6 +19,7 @@ DEFAULTS = [
      'times': ['08:20', '18:20'], 'channel_setting': 'INBOX_CHANNEL_ID'},
 ]
 PERSONAL_TOPICS = frozenset({'following'})
+MAX_OUTPUT_TOKENS = 6000  # Ten recommendations with tags, plus room for a thinking model.
 
 
 def bounded_int(value, minimum, maximum):
@@ -68,7 +69,8 @@ def parse_subscription(raw, topics, channels):
         raise ValueError('enabled 必须为布尔值')
     return Subscription(identity, topic, tuple(groups), tuple(sorted(times)), channel, params,
                         bounded_int(raw.get('max_candidates', 40), 1, 40),
-                        bounded_int(raw.get('max_output_tokens', 3000), 256, 3000), enabled)
+                        bounded_int(raw.get('max_output_tokens', getattr(topics[topic], 'max_output_tokens', 3000)),
+                                    256, MAX_OUTPUT_TOKENS), enabled)
 
 
 def load_subscriptions(topics):

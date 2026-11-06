@@ -61,7 +61,7 @@ class PoolReader(_ReadOnly):
 
 
 class DeliveryReader(_ReadOnly):
-    """Delivered news items and the runs (one Discord message each) that carried them."""
+    """Delivered news items and the runs (one Discord message each, or several pages) that carried them."""
 
     def deliveries_since(self, cursor, *, limit=500, strict=False):
         """Delivery rows with `delivered_at >= cursor` (`>` when `strict`), oldest first,
@@ -90,7 +90,10 @@ class DeliveryReader(_ReadOnly):
         return run
 
     def run_by_message(self, message_id):
-        rows = self._query('SELECT id FROM runs WHERE message_id=? ORDER BY id DESC LIMIT 1', (str(message_id),))
+        """The run that sent this message: its first message, or any later page of it."""
+        rows = self._query('''SELECT id FROM (SELECT id FROM runs WHERE message_id=?
+            UNION SELECT run_id AS id FROM deliveries WHERE message_id=? AND run_id IS NOT NULL)
+            ORDER BY id DESC LIMIT 1''', (str(message_id), str(message_id)))
         return self.get_run(rows[0]['id']) if rows else None
 
     def run_items(self, run_id):

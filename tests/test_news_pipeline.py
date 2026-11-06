@@ -294,10 +294,10 @@ class FeedbackButtonDeliveryTests(PipelineFixture):
             seen.append((run_id, count, self.store.get_run(run_id)['status']))
             return 'VIEW'
 
-        sub = subscription('following', 'following')
+        sub = subscription('discovery', 'discovery')
         edition = await self.pipeline.publish(sub, '2026-08-01/08:00', self.channel,
                                               retry_policy=ONCE, view_factory=factory)
-        run_id = self.store.status('following')['latest']['id']
+        run_id = self.store.status('discovery')['latest']['id']
         self.assertEqual(seen, [(run_id, len(edition.selected), 'sending')])
         self.channel.send.assert_awaited_once_with(embeds=edition.embeds, view='VIEW')
         self.assertEqual(self.store.get_run(run_id)['status'], 'delivered')
@@ -340,8 +340,12 @@ class FeedbackButtonDeliveryTests(PipelineFixture):
 
         self.model.side_effect = two
         edition = await self.pipeline.preview(subscription('following', 'following'), '2026-08-01/08:00')
-        body = edition.embeds[0].description
-        self.assertLess(body.index('① **[中文标题甲]'), body.index('② **[中文标题乙]'))
+        # Following is sent as one components-v2 page: header, then each item with its index.
+        self.assertEqual(edition.embeds, [])
+        page, = edition.pages
+        self.assertEqual([index for _, index in page], [None, 0, 1, None])
+        self.assertTrue(page[1][0].startswith('① **[中文标题甲]'))
+        self.assertTrue(page[2][0].startswith('② **[中文标题乙]'))
         self.assertEqual([item['title'] for item in edition.selected], ['中文标题甲', '中文标题乙'])
         discovery = TOPICS['discovery'].render(edition.selected, '早间', 'Test')[0].description
         self.assertNotIn('①', discovery)
@@ -428,3 +432,89 @@ class MigrationAndConfigurationTests(unittest.TestCase):
         self.assertEqual(period_for(sub, now.replace(fold=1)), period_for(sub, now))
         self.assertIsNone(period_for(sub, now.replace(hour=9), scheduled=True))
         self.assertEqual(period_for(sub, now.replace(hour=7)), '2026-07-31/08:00')
+
+
+def recommending(count):
+    """A model reply recommending the first `count` candidates, in order."""
+    async def reply(raw, **kwargs):
+        ids = [c['id'] for c in json.loads(raw)['candidates']][:count]
+        items = [{'id': i, 'title': f'中文标题{n}', 'summary': '原文提供了具体观察。',
+                  'why_read': '可以想一想：条件是否改变结论？', 'tags': ['渥太华']} for n, i in enumerate(ids)]
+        return AIResult(json.dumps({'items': items}, ensure_ascii=False), 'Test', 'model')
+    return reply
+
+
+class LayoutDeliveryTests(PipelineFixture):
+    """Following goes out as components-v2 pages, each item followed by its own buttons."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.upsert_articles([article(i) for i in range(1, 9)])
+        self.model.side_effect = recommending(7)
+        ids = iter([701, 702, 703])
+        self.channel.send = AsyncMock(side_effect=lambda **kwargs: SimpleNamespace(id=next(ids)))
+
+    async def send_following(self):
+        from cogs.feedback import item_row
+
+        return await self.pipeline.publish(subscription('following', 'following'), '2026-08-01/08:00', self.channel,
+                                           retry_policy=ONCE, view_factory=lambda run, i: item_row('run', run, i))
+
+    @staticmethod
+    def buttons(view):
+        return [c.custom_id for c in view.walk_children() if getattr(c, 'custom_id', None)]
+
+    async def test_seven_items_go_out_as_two_messages_with_rows_under_each_item(self):
+        edition = await self.send_following()
+        self.assertEqual(len(edition.selected), 7)
+        self.assertEqual(self.channel.send.await_count, 2)
+        first, second = (call.kwargs['view'] for call in self.channel.send.await_args_list)
+        self.assertEqual(set(self.channel.send.await_args_list[0].kwargs), {'view'})
+        run_id = self.store.status('following')['latest']['id']
+        self.assertEqual(len(self.buttons(first)), 20)
+        self.assertEqual(self.buttons(second)[0], f'fb:n:{run_id}:5:new')
+        self.assertLessEqual(first.total_children_count, 40)
+        # Each item's row comes right after its own text.
+        kinds = [type(c).__name__ for c in first.children[0].children]
+        self.assertEqual(kinds[:5], ['TextDisplay', 'TextDisplay', 'ActionRow', 'TextDisplay', 'ActionRow'])
+        rows = self.store.db.execute('SELECT message_id, status FROM deliveries ORDER BY delivered_at').fetchall()
+        self.assertEqual(sorted(r['message_id'] for r in rows), ['701'] * 5 + ['702'] * 2)
+        self.assertEqual(self.store.get_run(run_id)['message_id'], '701')
+        from core.news.reader import DeliveryReader
+        reader = DeliveryReader(self.path)
+        self.assertEqual(reader.run_by_message(702)['id'], run_id)
+        payload = reader.run_items(run_id)
+        self.assertEqual([item['_message_id'] for item in payload], ['701'] * 5 + ['702'] * 2)
+
+    async def test_a_failed_second_message_is_never_resent(self):
+        sends = [SimpleNamespace(id=801), RuntimeError('discord down')]
+        self.channel.send = AsyncMock(side_effect=sends)
+        with self.assertLogs('core.news.pipeline', 'ERROR'):
+            edition = await self.send_following()
+        run = self.store.status('following')['latest']
+        self.assertEqual(run['status'], 'delivered')
+        rows = self.store.db.execute('SELECT message_id, status FROM deliveries').fetchall()
+        self.assertEqual(sorted((r['status'], r['message_id']) for r in rows),
+                         [('delivered', '801')] * 5 + [('skipped', None)] * 2)
+        self.assertTrue(all(self.store.seen('following', item) for item in edition.selected))
+
+    async def test_a_failed_first_message_leaves_the_run_uncertain(self):
+        self.channel.send = AsyncMock(side_effect=RuntimeError('discord down'))
+        with self.assertRaises(RuntimeError):
+            await self.send_following()
+        self.assertEqual(self.store.status('following')['latest']['status'], 'uncertain')
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM deliveries').fetchone()[0], 0)
+
+    async def test_discovery_fits_ten_items_into_two_embeds_of_one_message(self):
+        self.store.upsert_articles([article(i) for i in range(9, 14)])
+        self.model.side_effect = recommending(10)
+        edition = await self.pipeline.publish(subscription('discovery', 'discovery'), '2026-08-01/08:00',
+                                              self.channel, retry_policy=ONCE)
+        self.assertEqual(len(edition.selected), 10)
+        self.channel.send.assert_awaited_once()
+        embeds = self.channel.send.await_args.kwargs['embeds']
+        self.assertEqual(len(embeds), 2)
+        self.assertIn('（续）', embeds[1].title)
+        self.assertIsNone(embeds[0].footer.text)
+        self.assertTrue(embeds[1].footer.text.startswith('✨ Powered by Test'))
+        self.assertLessEqual(sum(len(e) for e in embeds), 5800)

@@ -5,6 +5,8 @@ import datetime
 import json
 import logging
 
+import discord
+
 from core import ai_client
 from core.claude_budget import estimate_input_tokens
 from core.jobs import RetryPolicy, run_delivery_job
@@ -32,6 +34,11 @@ HISTORY_KEYS = ('recently_delivered', 'already_recommended')
 # With at least this many candidates an empty selection is treated as a soft failure: the
 # provider chain tries the next provider once and accepts empty only if that is empty too.
 MIN_CANDIDATES_FOR_EMPTY_RETRY = 10
+# Layout (components v2) editions: messages per run, text and items per message. An item
+# costs six components (text, row, four buttons) of Discord's 40, plus a container and header.
+MAX_PAGES = 2
+MAX_PAGE_TEXT = 4000
+MAX_PAGE_ITEMS = 6
 
 
 def is_empty_selection(text):
@@ -258,6 +265,9 @@ class NewsPipeline:
                                '; '.join(','.join(item['_factcheck']['reasons'][:3]) for item in failed))
         # Rendering also validates the complete message before caching or committing a send intent.
         if selected:
+            if hasattr(topic, 'fit'):
+                # Items that do not fit the message are dropped here, never sent half-rendered.
+                selected = topic.fit(selected, edition_name(period), attribution)
             topic.render(selected, edition_name(period), attribution)
         if not cached:
             self.store.cache(key, topic.name, topic.version, subscription.params, text, attribution,
@@ -274,6 +284,13 @@ class NewsPipeline:
             publishable.append({**item, '_delivery_key': identity, '_provider': provider, '_model': model})
         if not publishable:
             return None
+        if getattr(topic, 'layout', False):
+            pages = topic.render(publishable, edition_name(period), attribution)
+            if (not 1 <= len(pages) <= MAX_PAGES
+                    or any(sum(len(text) for text, _ in page) > MAX_PAGE_TEXT for page in pages)
+                    or any(sum(index is not None for _, index in page) > MAX_PAGE_ITEMS for page in pages)):
+                raise ValueError('新闻单次投递超过 Discord 总容量')
+            return Edition([], publishable, pages)
         embeds = topic.render(publishable, edition_name(period), attribution)
         if not 1 <= len(embeds) <= 10 or sum(len(embed) for embed in embeds) > 5800:
             raise ValueError('新闻单次投递超过 Discord 总容量')
@@ -298,7 +315,9 @@ class NewsPipeline:
     async def publish(self, subscription, period, channel, *, retry_policy=None, view_factory=None):
         """`view_factory(run_id, item_count)` builds optional message components (feedback buttons).
 
-        It runs after the send intent is persisted; without it the send call is unchanged.
+        For layout editions it is called per item instead, `view_factory(run_id, index)`, and
+        returns the action row shown right under that item. It runs after the send intent is
+        persisted; without it the send call is unchanged.
         """
         lock = self.locks.setdefault(subscription.id, asyncio.Lock())
         if lock.locked():
@@ -318,6 +337,9 @@ class NewsPipeline:
             nonlocal intent_written
             self.store.intent(run_id, edition.selected)
             intent_written = True
+            if edition.pages is not None:
+                await self._deliver_pages(channel, edition, run_id, view_factory, subscription.id)
+                return
             view = None
             if view_factory is not None:
                 try:
@@ -350,6 +372,32 @@ class NewsPipeline:
                     logger.exception('新闻运行状态写入失败；重启后必须核查发送意图')
             raise
 
+    async def _deliver_pages(self, channel, edition, run_id, row_factory, subscription_id):
+        """Send each page once, in order, then record which message carries which item.
+
+        The first page fails like a single message does. A later page that fails is not
+        retried: its items are recorded as skipped, so they are never sent twice.
+        """
+        message_ids = [None] * len(edition.selected)
+        first = None
+        for number, page in enumerate(edition.pages, 1):
+            view = layout_view(page, run_id, row_factory, subscription_id)
+            # No automatic retry of this operation, even for timeouts or cancellation.
+            try:
+                message = await channel.send(view=view)
+                if type(message.id) is not int or message.id <= 0:
+                    raise RuntimeError('Discord 未返回有效消息 ID')
+            except Exception:
+                if first is None:
+                    raise
+                logger.exception('新闻 %s 第 %d 条消息发送失败；其中条目记为跳过，不再重发', subscription_id, number)
+                break
+            first = first or message.id
+            for _, index in page:
+                if index is not None:
+                    message_ids[index] = message.id
+        self.store.complete(run_id, first, item_messages=message_ids)
+
     async def publish_due(self, subscriptions, now, channel_lookup, *, views=None):
         """`views(subscription)` returns that subscription's `view_factory` (or None)."""
         from core.news.subscriptions import period_for
@@ -366,3 +414,22 @@ class NewsPipeline:
         # One failed/slow topic does not cancel siblings; model calls still share a semaphore.
         await asyncio.gather(*(run(sub, period) for sub in subscriptions if sub.enabled and sub.channel_id
                                and (period := period_for(sub, now, scheduled=True))))
+
+
+def layout_view(page, run_id, row_factory, subscription_id=''):
+    """One components-v2 message: a card whose items are each followed by their own buttons."""
+    container = discord.ui.Container(accent_colour=discord.Colour.purple())
+    for text, index in page:
+        container.add_item(discord.ui.TextDisplay(text))
+        if index is None or row_factory is None:
+            continue
+        try:
+            row = row_factory(run_id, index)
+        except Exception as error:  # noqa: BLE001 - buttons are optional, the send is not
+            logger.warning('新闻按钮构造失败，该条无按钮 [%s #%s]: %s', subscription_id, index, error)
+            row = None
+        if row is not None:
+            container.add_item(row)
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
+    return view

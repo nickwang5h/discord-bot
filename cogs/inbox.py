@@ -33,6 +33,17 @@ def _first_url(text: str) -> str | None:
     return match.group(0).rstrip(".,;:!?)]}>\"'*") if match else None
 
 
+def _component_texts(components) -> list[str]:
+    """Text blocks of a components-v2 message, in display order (containers flattened)."""
+    texts = []
+    for component in components or ():
+        content = getattr(component, 'content', None)
+        if isinstance(content, str) and content:
+            texts.append(content)
+        texts += _component_texts(getattr(component, 'children', None))
+    return texts
+
+
 def payload_from_message(message, replied_to=None) -> Payload:
     """What to save from a marked message.
 
@@ -47,6 +58,11 @@ def payload_from_message(message, replied_to=None) -> Payload:
                        summary="" if url else content)
 
     embeds = list(message.embeds)
+    if not embeds and not content:
+        # A components-v2 card (the personal digest): its text is in the components.
+        texts = _component_texts(getattr(message, 'components', None))
+        title = texts[0].lstrip('#').strip().splitlines()[0][:80] if texts else ""
+        return Payload(url=_first_url("\n".join(texts)), title=title, note="", summary="\n\n".join(texts))
     title = next((embed.title for embed in embeds if embed.title), "") or ""
     parts = []
     for embed in embeds:

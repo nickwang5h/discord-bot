@@ -214,7 +214,7 @@ Gemini 出现 `429` 或 `RESOURCE_EXHAUSTED` 时记录服务级 cooldown。冷�
 
 普通交互命令在所有 provider 失败时得到用户友好的错误文本；定时内容使用 `raise_on_failure=True`，让失败进入任务重试，不会把错误提示作为日报正文推送。
 
-所有请求默认限制 4096 个输出 token。综合新闻选择和视野拾遗选编分别限制为 3000 输出 token；探索阅读每期最多 40 条候选，每条 RSS 证据最多 600 字符，只进行一次模型选编，不再每小时打分或二次改写。综合新闻另外受 Discord 单次消息 embed 总字符预算约束。
+所有请求默认限制 4096 个输出 token。综合新闻选择限制为 3000 输出 token，视野拾遗与 following 选编默认 6000（十条推荐，含思考模型的余量）；探索阅读每期最多 40 条候选，每条 RSS 证据最多 600 字符，只进行一次模型选编，不再每小时打分或二次改写。综合新闻另外受 Discord 单次消息 embed 总字符预算约束。
 
 OpenAI-compatible provider 的超时覆盖整个候选模型池，而不是每个模型重新计时；HTTP 413 会直接终止该 provider 的模型轮询，因为相同 payload 不会因切换模型而缩小（同一次调用里不会再向 Groq 重发，直接进入智谱）。provider 总超时：Groq 20 秒、智谱 30 秒、OpenRouter 60 秒（免费 Nemotron 处理约 6–8k 输入＋3000 输出常超过 25 秒），加 Gemini offline 30 秒，免费链最坏 140 秒，落在新闻 180 秒总超时内。
 
@@ -257,7 +257,7 @@ SQLite 状态、通用选编／投递流程、公开订阅配置。`topics/` 显
 只保存原始标题、摘要、来源、URL、发布时间、首次发现时间及内容版本，不保存 AI 摘要
 作为其他专题的证据。采集并不按疑似事件合并媒体链接。SQLite 当前素材最多3000条、
 原始版本最多6000条，保留7天。专题分别控制候选量：综合新闻8个来源每发布方4条、
-最多36条；视野拾遗9个来源交错最多40条、最多5条推荐；电力专题最多40候选、4条结果。
+最多36条；视野拾遗9个来源交错最多40条、最多10条推荐；电力专题最多40候选、4条结果。
 未提供发布时间不会用采集时间冒充新发布，电力专题在此情况下保守跳过。电力专题的候选
 过滤是确定性正则：原文含电力关键词（含 grids/substations/transformers 复数）且明确出现所选
 国家名（US/United States/American、Canada/Canadian）；来源是综合与视野拾遗的大众媒体 RSS，
@@ -309,7 +309,7 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 仍依赖模型，不把 RSS 推荐等同完整事实核验或买家搜索。
 
 每份订阅独立加锁，定时运行互不等待；全新闻共享模型并发（默认2）、UTC日逻辑调用额度
-（默认24次）和输出token预留（默认72000）。单次最多3000输出token，180秒总超时，
+（默认24次）和输出token预留（默认72000）。单次输出token默认取专题的 `max_output_tokens`（综合与电力3000，视野拾遗与 following 6000），配置上限6000，180秒总超时，
 不把 provider 内部 fallback 计量冒充精确账单。没有候选不调用模型，空选稿不发送。
 
 空选稿软失败：候选 ≥ 10（`pipeline.MIN_CANDIDATES_FOR_EMPTY_RETRY`）时，模型返回格式正确但为空的
@@ -348,8 +348,18 @@ provider 仍可回答，Groq 由上面的分钟账本跳过）。候选永远比
 免费模型输出宽容规则（`models.lenient_items`，四个专题共用）：顶层与条目里的多余字段忽略、不进入
 结果；可选字段缺失、为 null 或空白按空处理（视野拾遗/following 的 `why_read` 为空串，卡片省略
 “值得一读”行；following 的 `tags` 为 `[]`，非列表也按 `[]`；电力的 actor/location/equipment/event_date
-为 null，显示“原文未提供”）；条数超过上限（综合新闻=候选数、视野拾遗/following 5、电力 4）按模型
-返回顺序截断，只校验保留的部分。不放宽的部分：`items` 必须是列表、条目必须是对象，核心字段
+为 null，显示“原文未提供”）；条数超过上限（综合新闻=候选数、视野拾遗/following 10、电力 4）按模型
+返回顺序截断，只校验保留的部分。
+
+投递形态：视野拾遗每 5 条一张 embed，一条消息最多两张、合计 ≤5800 字符；放不下的尾部条目在
+`topic.fit()` 里去掉（不记投递，之后可再选），不会半截发送。following 是 layout 专题
+（`layout = True`）：`render` 返回页（每页 ≤5 条，`(markdown, 条目序号|None)` 块），管线用
+components v2 的 `LayoutView`（一个紫色 Container，每条 `TextDisplay` 后紧跟它自己的一行按钮；
+5 条约 33 个组件，Discord 上限 40、文本 4000）逐页发送，最多两条消息。每页只发一次：第一页失败与单条
+消息一样记 `uncertain`；后面的页失败只记 error、不重试，其中条目以 `skipped` 写入 `deliveries`，
+保证不会重发。`complete(..., item_messages=)` 把每条所在的消息 ID 写进 `deliveries` 和 run payload
+（`_message_id`），`runs.message_id` 是第一页；`DeliveryReader.run_by_message` 也按 `deliveries.message_id`
+反查，所以第二页上的反应同样能找到条目。不放宽的部分：`items` 必须是列表、条目必须是对象，核心字段
 （id、title、summary；电力另有 project、country、country_quote、stage、stage_quote、new_fact）缺失即
 整批无效；id 必须来自候选且不重复、链接只由程序按候选绑定、长度/中文/URL/Markdown 检查、电力
 逐字引文与阶段/地区依据、同链接“新进展：”要求都不变。
@@ -421,8 +431,10 @@ attribution 解析出的 `_provider`、`_model`，写入运行发送意图与投
 哈希）只保留一条有效判定，每次变化写入 `feedback_log`。设计见
 [反信息差设计稿](docs/design-anti-info-gap.md) §2。
 
-- **按钮**（`cogs/feedback.py`）：`view_for(kind, ref, count, state)` 为一条消息里的前 5 条
-  各生成一行 `①🆕 ①👌 ①🚫 ①📥`，`custom_id` 为 `fb:<n|w>:<run 或追踪投递 id>:<序号>:<值>`。
+- **按钮**（`cogs/feedback.py`）：`view_for(kind, ref, count, state)` 为一条 embed 消息里的前 5 条
+  各生成一行 `①🆕 ①👌 ①🚫 ①📥`；layout 消息（following）改用 `item_row(kind, ref, index)`，每条
+  正文下面紧跟它自己那一行，序号 0–9（①…⑩）。`custom_id` 为 `fb:<n|w>:<run 或追踪投递 id>:<序号>:<值>`。
+  重画 layout 消息时用 `LayoutView.from_message` 原样重建、`restyle` 只改按钮颜色。
   按钮是 `DynamicItem`，加载 Cog 时 `add_dynamic_items` 注册、卸载时移除，重启后旧消息上的
   按钮照常可用。点击后按 run 反查条目，写入判定并原地重画视图：当前精确判定和已存收件箱
   的按钮变绿；再点同一个判定按钮即撤销（规则在 `FeedbackStore.record` 内）。编辑消息失败

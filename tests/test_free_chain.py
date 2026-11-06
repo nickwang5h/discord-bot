@@ -322,19 +322,19 @@ class LenientParsingTests(unittest.TestCase):
     def test_following_extra_missing_optional_and_overflow(self):
         candidates = _prepare_candidates([
             {'title': f'Story {i}', 'url': f'https://example.com/{i}', 'content': 'Concrete evidence.',
-             'publisher': f'P{i}', 'source': 'General', 'published_at': NOW} for i in range(8)])
-        items = [recommendation(f'R{i + 1:02}', tags=['芯片'], score=9) for i in range(7)]
+             'publisher': f'P{i}', 'source': 'General', 'published_at': NOW} for i in range(13)])
+        items = [recommendation(f'R{i + 1:02}', tags=['芯片'], score=9) for i in range(12)]
         items[0].pop('tags')
         items[1].pop('why_read')
         items[2]['tags'] = '芯片'
         selected = _normalize_recommendations(json.dumps({'items': items}, ensure_ascii=False), candidates,
                                               with_tags=True)
-        self.assertEqual([s['id'] for s in selected], ['R01', 'R02', 'R03', 'R04', 'R05'])  # model order, cut at 5
+        self.assertEqual([s['id'] for s in selected], [f'R{i:02}' for i in range(1, 11)])  # model order, cut at 10
         self.assertEqual(selected[0]['tags'], [])
         self.assertEqual(selected[1]['why_read'], '')
         self.assertEqual(selected[2]['tags'], [])
         self.assertNotIn('score', selected[3])
-        body = _render_recommendations(selected, numbered=True)
+        body = _render_recommendations(selected[:5], numbered=True)
         self.assertEqual(body.count('值得一读'), 4)  # the line is omitted for the missing reason
 
     def test_core_fields_ids_and_text_rules_stay_strict(self):
