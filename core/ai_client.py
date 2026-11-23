@@ -32,10 +32,13 @@ ZHIPU_MODELS = [
     ModelSpec("glm-4.7-flash"),
     ModelSpec("glm-4.5-flash"),
 ]
+# Verified against https://openrouter.ai/api/v1/models on 2026-11-22: the former first node
+# nvidia/nemotron-3-super-120b-a12b:free is gone, and Nano no longer lists response_format.
 OPENROUTER_MODELS = [
-    ModelSpec("nvidia/nemotron-3-super-120b-a12b:free"),
+    ModelSpec("nvidia/nemotron-3.5-super-vl:free"),
+    ModelSpec("baidu/ernie-5.5-flash-preview:free"),
     ModelSpec("nvidia/nemotron-3-ultra-550b-a55b:free", supports_json=False),
-    ModelSpec("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
+    ModelSpec("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", supports_json=False),
 ]
 
 # Provider-wide time budgets (each covers that provider's whole model pool). Free chain
@@ -247,6 +250,7 @@ async def _ask_groq(
     system: str,
     json_mode: bool = False,
     max_output_tokens: int = 4096,
+    skip_models: frozenset[str] = frozenset(),
 ) -> AIResult:
     api_key = settings.get_secret("GROQ_API_KEY")
     if not api_key:
@@ -260,7 +264,7 @@ async def _ask_groq(
         provider="Groq",
         endpoint="https://api.groq.com/openai/v1/chat/completions",
         api_key=api_key,
-        models=GROQ_MODELS,
+        models=[spec for spec in GROQ_MODELS if spec.model_id not in skip_models],
         text=text,
         system=system,
         json_mode=json_mode,
@@ -275,6 +279,7 @@ async def _ask_zhipu(
     system: str,
     json_mode: bool = False,
     max_output_tokens: int = 4096,
+    skip_models: frozenset[str] = frozenset(),
 ) -> AIResult:
     api_key = settings.get_secret("ZHIPU_API_KEY")
     if not api_key:
@@ -283,7 +288,7 @@ async def _ask_zhipu(
         provider="Zhipu",
         endpoint="https://open.bigmodel.cn/api/paas/v4/chat/completions",
         api_key=api_key,
-        models=ZHIPU_MODELS,
+        models=[spec for spec in ZHIPU_MODELS if spec.model_id not in skip_models],
         text=text,
         system=system,
         json_mode=json_mode,
@@ -298,6 +303,7 @@ async def _ask_openrouter(
     system: str,
     json_mode: bool = False,
     max_output_tokens: int = 4096,
+    skip_models: frozenset[str] = frozenset(),
 ) -> AIResult:
     api_key = settings.get_secret("OPENROUTER_API_KEY")
     if not api_key:
@@ -312,7 +318,7 @@ async def _ask_openrouter(
         provider="OpenRouter",
         endpoint="https://openrouter.ai/api/v1/chat/completions",
         api_key=api_key,
-        models=models,
+        models=[spec for spec in models if spec.model_id not in skip_models],
         text=text,
         system=system,
         json_mode=json_mode,
@@ -329,6 +335,7 @@ async def _ask_compatible_providers(
     max_output_tokens: int,
     errors: list[str],
     soft: _SoftRetry | None = None,
+    skip_models: frozenset[str] = frozenset(),
 ) -> AIResult | None:
     providers = (
         ("Groq", _ask_groq),
@@ -342,6 +349,7 @@ async def _ask_compatible_providers(
                 system,
                 json_mode=json_mode,
                 max_output_tokens=max_output_tokens,
+                **({"skip_models": skip_models} if skip_models else {}),
             )
         except Exception as error:
             errors.append(f"{provider_name}: {error}")
@@ -521,6 +529,7 @@ async def generate_ai(
     route: str | None = None,
     json_schema: dict | None = None,
     soft_reject: Callable[[str], bool] | None = None,
+    skip_models: frozenset[str] = frozenset(),
 ) -> AIResult:
     """Route basic generation to Qwen first and reserve Gemini priority for Search.
 
@@ -530,6 +539,9 @@ async def generate_ai(
     ``soft_reject(text)`` marks a successful but unusable answer (see ``_SoftRetry``): the
     chain tries the next provider once and accepts its answer; the first answer is kept
     as the result when no later provider answers.
+
+    ``skip_models`` leaves those model ids out of the Groq/Zhipu/OpenRouter pools, so a
+    second opinion (news fact-check repair) comes from a different model than the first.
     """
     soft = _SoftRetry(soft_reject)
     if route is not None and not use_search and (json_schema is not None or not json_mode):
@@ -550,6 +562,7 @@ async def generate_ai(
             max_output_tokens=max_output_tokens,
             errors=errors,
             soft=soft,
+            skip_models=skip_models,
         )
         if compatible_result is not None:
             return compatible_result
@@ -604,6 +617,7 @@ async def generate_ai(
             max_output_tokens=max_output_tokens,
             errors=errors,
             soft=soft,
+            skip_models=skip_models,
         )
         if compatible_result is not None:
             return compatible_result

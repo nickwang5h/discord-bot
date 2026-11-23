@@ -147,6 +147,18 @@ class NumberTests(unittest.TestCase):
         self.assertEqual(self.check('2025年销量', 'sales last year'), [])
         self.assertEqual(self.check('2024年销量', 'sales last year'), ['2024'])
 
+    def test_chinese_language_source_scales_and_names(self):
+        source = ('【中芯国际：前三季度归母净利润73.14亿元，同比增长91.6%】2026年前三季度营业收入606.18亿元；'
+                  '英伟达宣布黄仁勋辞去CEO，马斯克发文评论。')
+        self.assertEqual(self.check('前三季度营收606.18亿元，净利润73.14亿元', source), [])
+        self.assertEqual(self.check('营收660亿元', source), ['660亿'])
+        # A Chinese source cannot contain the Latin spellings the prompt asks for.
+        self.assertEqual(factcheck.check_text('黄仁勋（Jensen Huang）辞去Nvidia首席执行官，马斯克评论', source,
+                                              published_at=PUBLISHED), [])
+        self.assertEqual(factcheck.check_text('特朗普发表评论', source, published_at=PUBLISHED), ['译名:特朗普'])
+        self.assertEqual(factcheck.check_text('黄仁勋（Jensen Huang）辞职', 'Nvidia CEO steps down',
+                                              published_at=PUBLISHED), ['人名:Jensen Huang'])
+
     def test_kilometres_are_not_a_thousand_scale(self):
         self.assertEqual(self.check('10千米', '10 km'), [])
 
@@ -258,6 +270,52 @@ class PipelineFactcheckTests(PipelineFixture):
         self.assertEqual((item['_provider'], item['_model']), ('Groq', 'qwen/qwen3-32b'))
         self.assertFalse(item['_factcheck']['ok'])
         self.assertIn('数字:99', item['_factcheck']['reasons'])
+
+    async def test_failed_item_is_rewritten_once_by_a_different_model(self):
+        self.store.upsert_articles([article(1, content='A concrete observation, with a comparison.')])
+
+        async def model(raw, **kwargs):
+            data = json.loads(raw)
+            if 'candidates' in data:
+                item = {'id': data['candidates'][0]['id'], 'title': '有依据的中文标题',
+                        'summary': '原文提供了99项新的具体观察。'}
+                return AIResult(json.dumps({'items': [item]}, ensure_ascii=False), 'Groq', 'qwen/qwen3.8-27b')
+            [failed] = data['items']
+            self.assertEqual(failed['title'], 'Original story 1')
+            self.assertEqual(failed['problems'], ['数字:99'])
+            self.assertEqual(kwargs['skip_models'], frozenset({'qwen/qwen3.8-27b'}))
+            rewrite = {'id': failed['id'], 'title': '重新核对的中文标题', 'summary': '原文提供了一项具体观察和比较。'}
+            return AIResult(json.dumps({'items': [rewrite]}, ensure_ascii=False), 'Zhipu', 'glm-4.7-flash')
+
+        self.model.side_effect = model
+        await self.publish()
+        self.assertEqual(self.model.await_count, 2)
+        self.channel.send.assert_awaited_once()
+        description = self.channel.send.await_args.kwargs['embeds'][0].description
+        self.assertIn('重新核对的中文标题', description)
+        self.assertNotIn('「原文」', description)
+        [item] = json.loads(self.store.get_run(1)['payload'])
+        self.assertEqual((item['_provider'], item['_model']), ('Zhipu', 'glm-4.7-flash'))
+        self.assertEqual(item['_factcheck'], {'ok': True, 'reasons': [], 'repaired': True, 'first_reasons': ['数字:99']})
+
+    async def test_a_rewrite_that_fails_again_or_is_malformed_keeps_the_original(self):
+        for number, second in enumerate(('{"items":[{"id":"F1","title":"仍然错误","summary":"共有88项观察。"}]}',
+                                         '{"items":[{"id":"F1","title":"English only"}]}', 'not json'), 1):
+            self.store.upsert_articles([article(number, content='A concrete observation, with a comparison.')])
+
+            async def model(raw, second=second, **kwargs):
+                data = json.loads(raw)
+                if 'candidates' not in data:
+                    return AIResult(second, 'Zhipu', 'glm-4.7-flash')
+                item = {'id': data['candidates'][0]['id'], 'title': '有依据的中文标题', 'summary': '共有99项观察。'}
+                return AIResult(json.dumps({'items': [item]}, ensure_ascii=False), 'Groq', 'qwen/qwen3.8-27b')
+
+            self.model.side_effect = model
+            await self.publish(period=f'2026-08-0{number}/08:00')
+            [item] = json.loads(self.store.get_run(number)['payload'])
+            self.assertFalse(item['_factcheck']['ok'])
+            self.assertTrue(item['digest_title'].startswith('「原文」'))
+            self.assertEqual(item['_model'], 'qwen/qwen3.8-27b')
 
     async def test_passing_item_keeps_chinese_text_and_records_model(self):
         self.store.upsert_articles([article(1)])

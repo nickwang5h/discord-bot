@@ -291,8 +291,11 @@ def _build_digest_embeds(
 
 class GeneralTopic:
     name = "general"
-    version = "2"
+    version = "3"
     max_age = 86400
+    # Role → (item field, character limit), for the fact-check repair rewrite.
+    text_fields = {"title": ("digest_title", MAX_RENDERED_TITLE_CHARS),
+                   "summary": ("digest_summary", MAX_RENDERED_SUMMARY_CHARS)}
 
     def validate_params(self, params):
         if params:
@@ -335,7 +338,7 @@ class GeneralTopic:
             "早间提供较完整的当日概览，"
             "午后侧重新发生的消息与明确进展。不要追求固定条数，不为类别配额凑数，也不要刻意"
             "压缩成几条头条；保留有具体事实、值得读者知道的独立事件，过滤广告、泛泛评论和重复报道。"
-            "recently_delivered 是已投递历史。同一事件即使换链接、改标题、改措辞也不是新消息；"
+            "recently_delivered 是已投递历史（含同一批读者在视野拾遗频道已经看过的报道）。同一事件即使换链接、改标题、改措辞也不是新消息；"
             "必须比较历史与候选中的具体事实，只有新增结果、数字、决定或行动才可再次选择，"
             "这种条目的摘要必须以‘新进展：’开头，直接交代新增事实。无法指出新增事实则跳过。"
             "每条返回简短自然的中文标题（最多40字符，专名可保留英文），以及一两句中文摘要"

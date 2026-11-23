@@ -1,6 +1,8 @@
 """Bounded news contracts. Topic-specific fields live in validated result dictionaries."""
 import hashlib
 import json
+import re
+import unicodedata
 from dataclasses import dataclass, field
 
 
@@ -33,6 +35,8 @@ class Subscription:
     max_candidates: int = 40
     max_output_tokens: int = 3000
     enabled: bool = True
+    # Other subscriptions whose deliveries this one must not repeat (shared channels only).
+    avoid: tuple[str, ...] = ()
 
 
 @dataclass
@@ -64,6 +68,18 @@ def bind_evidence(candidates, articles):
             'published_at': article.published_at, 'evidence_hash': article.version,
         }
     return candidates
+
+
+def title_key(value):
+    """Same headline across reposts: width/case/punctuation/whitespace-insensitive."""
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", str(value or "")).casefold())
+
+
+def drop_delivered_elsewhere(articles, avoided):
+    """Articles another subscription has not already delivered (same link or same headline)."""
+    urls = {item.get('url') for item in avoided}
+    titles = {key for item in avoided if (key := title_key(item.get('title')))}
+    return [a for a in articles if a.url not in urls and title_key(a.title) not in titles]
 
 
 MAX_HISTORY_ITEMS = 30

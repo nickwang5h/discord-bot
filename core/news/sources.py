@@ -16,18 +16,26 @@ GENERAL = (
     ARS_TECHNICA,
     TECHCRUNCH,
 )
+# Discovery shares no outlet with GENERAL: the same readers get both channels, and a shared
+# outlet (BBC World, Ars Technica and TechCrunch until 2026-11-22) meant the same articles twice.
 DISCOVERY = (
-    ARS_TECHNICA, TECHCRUNCH,
     FeedSource('Tech', 'https://www.theverge.com/rss/index.xml', 'The Verge'),
     FeedSource('Tech', 'https://www.wired.com/feed/rss', 'Wired'),
-    BBC_WORLD,
     FeedSource('World', 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml', 'NYT World'),
     FeedSource('Finance', 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664', 'CNBC Finance'),
     FeedSource('Science', 'https://www.nature.com/nature.rss', 'Nature'),
     FeedSource('AI', 'https://openai.com/blog/rss.xml', 'OpenAI'),
 )
+# Trade press for the power-projects topic; mass media rarely carry project milestones.
+# All four answered with dated items and summaries on 2026-11-22.
+POWER = (
+    FeedSource('Power', 'https://www.utilitydive.com/feeds/news/', 'Utility Dive'),
+    FeedSource('Power', 'https://www.powermag.com/feed/', 'POWER Magazine'),
+    FeedSource('Power', 'https://www.power-eng.com/feed/', 'Power Engineering'),
+    FeedSource('Power', 'https://www.ebmag.com/feed/', 'Electrical Business'),
+)
 # Shared with friends. Personal sources never join these groups.
-SHARED_GROUPS = {'general': GENERAL, 'discovery': DISCOVERY}
+SHARED_GROUPS = {'general': GENERAL, 'discovery': DISCOVERY, 'power': POWER}
 GROUP_NAMES = (*SHARED_GROUPS, *personal.PERSONAL_GROUPS)
 SHARED_NAMES = frozenset(source.name for group in SHARED_GROUPS.values() for source in group)
 

@@ -14,9 +14,22 @@ from core.news.models import (
 )
 from core.utils import create_ai_embed
 
+# Trade press names the state or province, rarely the country. Georgia is left out (also a
+# country); the two-letter postal codes are too ambiguous to count as evidence.
+US_STATES = (
+    'Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Hawaii|Idaho|'
+    'Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|'
+    'Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|'
+    'North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|'
+    'South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming'
+)
+CA_PROVINCES = (
+    'Ontario|Quebec|Québec|British Columbia|Alberta|Manitoba|Saskatchewan|Nova Scotia|New Brunswick|'
+    'Newfoundland|Labrador|Prince Edward Island|Yukon|Nunavut|Northwest Territories'
+)
 COUNTRIES = {
-    'US': r'\b(?:United States|American)\b|(?-i:\bU\.?S\.?A?\.?(?!\w))',
-    'CA': r'\b(?:Canada|Canadian)\b',
+    'US': rf'\b(?:United States|American|{US_STATES})\b|(?-i:\bU\.?S\.?A?\.?(?!\w))',
+    'CA': rf'\b(?:Canada|Canadian|{CA_PROVINCES})\b',
     'GB': r'\b(?:United Kingdom|UK|Britain|British)\b',
     'DE': r'\b(?:Germany|German)\b',
     'FR': r'\b(?:France|French)\b',
@@ -45,7 +58,7 @@ def _plain(value):
 
 class PowerProjectsTopic:
     name = 'power_projects'
-    version = '1'
+    version = '2'
     max_age = 3 * 86400
 
     def validate_params(self, params):
@@ -79,7 +92,7 @@ class PowerProjectsTopic:
             '同一项目换媒体、改标题不是新进展；比较 recently_delivered，事实未变则跳过。'
             'project 使用原文中的明确项目/政策名称，同一项目若历史 title 中有名称则沿用（必须也出现在本条原文）；'
             '不能用国家、行业或整个公司代替项目名称。actor/location/equipment 缺失用 null，禁止猜测。'
-            'country 为国家代码；country_quote 是本条明确国家依据的原文短句。'
+            'country 为国家代码；country_quote 是本条明确国家依据的原文短句（国名，或该国的州名／省名，如 Texas、Ontario）。'
             'stage 只用 planning/procurement/awarded/policy；stage_quote 必须是本次进展的原文证据。'
             '授标、签约不能写为仍在采购；不能从规划或设备需求推断公开采购。多个阶段混杂不清则不选。'
             'event_date 仅当原文明确给出 ISO 日期时复制，否则 null，不能拿发布时间替代。'

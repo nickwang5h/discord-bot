@@ -91,6 +91,44 @@ class NewsPipelineTests(PipelineFixture):
         self.assertEqual(len(self.store.history('general')), 1)
         self.assertEqual(len(self.store.history('discovery')), 1)
 
+    async def test_avoid_keeps_another_subscriptions_deliveries_out(self):
+        self.store.upsert_articles([article(1), article(2, publisher='Wired')])
+        await self.publish()  # general delivers story 1
+        delivered = self.store.history('general')[0]['title']
+        advanced = subscription('discovery', 'discovery', avoid=('general',))
+        await self.publish(advanced)
+        data = json.loads(self.model.await_args_list[-1].args[0])
+        # The delivered story is no candidate (same link, or same headline under another link)...
+        self.assertNotIn(delivered, [c['title'] for c in data['candidates']])
+        self.assertEqual(len(data['candidates']), 1)
+        # ...and the model sees it as already read, to skip the same event from another outlet.
+        self.assertEqual([h['title'] for h in data['already_recommended']], [delivered])
+        self.assertNotEqual(self.store.history('discovery')[0]['url'], self.store.history('general')[0]['url'])
+        # Previews apply it as well; without `avoid` both stories stay candidates.
+        self.store.upsert_articles([article(3, publisher='Wired'), article(4, url='https://example.com/other',
+                                                                             publisher='NYT World')])
+        preview = await self.pipeline.preview(advanced, '2026-08-02/08:00')
+        self.assertIsNotNone(preview)
+        titles = [c['title'] for c in json.loads(self.model.await_args_list[-1].args[0])['candidates']]
+        self.assertNotIn(delivered, titles)
+
+    def test_avoid_is_validated_and_never_reads_personal_deliveries(self):
+        channels = {'NEWS_CHANNEL_ID': 123, 'INBOX_CHANNEL_ID': 789}
+        base = {'id': 'a', 'topic': 'general', 'source_groups': ['general'], 'times': ['08:00'],
+                'channel_setting': 'NEWS_CHANNEL_ID'}
+        for bad in (['a'], 'general', ['B'], ['x', 'x']):
+            with self.assertRaises(ValueError):
+                parse_subscription({**base, 'avoid': bad}, TOPICS, channels)
+        personal = {'id': 'following', 'topic': 'following', 'source_groups': ['following'], 'times': ['08:20'],
+                    'channel_setting': 'INBOX_CHANNEL_ID'}
+        with self.assertRaises(ValueError):
+            parse_subscription({**personal, 'avoid': ['a']}, TOPICS, channels)
+        with patch('core.news.subscriptions.settings.load_settings',
+                   return_value={**channels, 'NEWS_SUBSCRIPTIONS': [{**base, 'avoid': ['following', 'b']}, personal]}):
+            subs, errors = load_subscriptions(TOPICS)
+        self.assertEqual(subs[0].avoid, ('b',))
+        self.assertEqual(len(errors), 1)
+
     async def test_subscriptions_do_not_share_delivery_history(self):
         self.store.upsert_articles([article()])
         await self.publish(subscription('one'))
@@ -386,8 +424,13 @@ class MigrationAndConfigurationTests(unittest.TestCase):
         channels = {'NEWS_CHANNEL_ID': 123, 'TEST_NEWS_CHANNEL_ID': 456}
         subs = [parse_subscription(raw, TOPICS, channels) for raw in DEFAULTS]
         self.assertEqual(subs[0].times, ('08:45', '15:30'))
-        self.assertEqual(subs[1].times, ('08:00', '18:00'))
-        self.assertEqual([s.channel_id for s in subs], [123, 456, 456, None])
+        # Discovery follows the morning general edition; the two must not repeat each other.
+        self.assertEqual(subs[1].times, ('09:15', '18:00'))
+        self.assertEqual((subs[0].avoid, subs[1].avoid, subs[3].avoid), (('discovery',), ('general',), ()))
+        # Power news: once at noon in the general news channel, fed by trade press first.
+        self.assertEqual([s.channel_id for s in subs], [123, 456, 123, None])
+        self.assertEqual((subs[2].times, subs[2].source_groups), (('12:00',), ('power', 'general', 'discovery')))
+        self.assertEqual(len(SHARED_GROUPS['power']), 4)
         self.assertEqual((subs[3].topic, subs[3].source_groups), ('following', ('following',)))
         self.assertEqual(subs[2].params, {'countries': ['US', 'CA']})
         self.assertEqual(len(sources_for(('general',))), 6)
@@ -395,7 +438,8 @@ class MigrationAndConfigurationTests(unittest.TestCase):
         names = {source.name for group in SHARED_GROUPS.values() for source in group}
         self.assertFalse(names & {'CNBC', 'Yahoo Finance'})
         self.assertIn('CNBC Finance', names)
-        self.assertEqual(len(SHARED_GROUPS['discovery']), 9)
+        self.assertEqual(len(SHARED_GROUPS['discovery']), 6)
+        self.assertFalse({s.url for s in SHARED_GROUPS['general']} & {s.url for s in SHARED_GROUPS['discovery']})
         shared = {source.name for group in ('general', 'discovery') for source in SHARED_GROUPS[group]}
         self.assertFalse(shared & {'B站关注', '华尔街见闻'})
 

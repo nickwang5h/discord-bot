@@ -12,7 +12,7 @@ from core.claude_budget import estimate_input_tokens
 from core.jobs import RetryPolicy, run_delivery_job
 from core.news import factcheck
 from core.news.ingest import Ingester
-from core.news.models import Edition, fingerprint, trim_candidates
+from core.news.models import Edition, drop_delivered_elsewhere, fingerprint, trim_candidates
 from core.news.sources import sources_for
 from core.news.subscriptions import bounded_int, edition_name
 from core.news.topics import TOPICS
@@ -200,11 +200,18 @@ class NewsPipeline:
             articles = [a for a in articles if not self.store.seen(subscription.id, {'url': a.url, '_version': a.version})]
         personal = getattr(topic, 'personal', False)
         profile = await self._profile(subscription) if personal else None
+        # What the same readers already got from the subscriptions this one must not repeat:
+        # the same link or headline is removed here, the same event under another headline is
+        # left to the model, which sees these deliveries in its history. Previews apply it too.
+        avoided = [item for other in subscription.avoid for item in self.store.history(other)]
+        if avoided:
+            articles = drop_delivered_elsewhere(articles, avoided)
+        context = history + avoided
 
         def prepare(scope):
             if personal:
-                return topic.prepare(articles, scope, history, edition_name(period), profile=profile)
-            return topic.prepare(articles, scope, history, edition_name(period))
+                return topic.prepare(articles, scope, context, edition_name(period), profile=profile)
+            return topic.prepare(articles, scope, context, edition_name(period))
 
         prepared = prepare(subscription)
         if not prepared.candidates:
@@ -254,15 +261,18 @@ class NewsPipeline:
             selected = topic.validate(text, prepared.candidates, subscription, history, profile=profile)
         else:
             selected = topic.validate(text, prepared.candidates, subscription, history)
-        # Free deterministic source check (numbers, Latin names): failures are delivered with the
-        # original English text, never dropped. Topics without it (power) keep their own checks.
+        # Free deterministic source check (numbers, Latin names). A failed item is never dropped:
+        # a different model rewrites it once, and only if that fails too is it delivered with the
+        # original text. Topics without the check (power) keep their own.
         if selected and hasattr(topic, 'factcheck'):
-            selected = topic.factcheck(selected)
-            failed = [item for item in selected if not item['_factcheck']['ok']]
-            if failed:
-                logger.warning('新闻 %s 事实核查 %d/%d 条未通过，改发原文 [%s]: %s', subscription.id, len(failed),
-                               len(selected), attribution,
-                               '; '.join(','.join(item['_factcheck']['reasons'][:3]) for item in failed))
+            drafts, selected = selected, topic.factcheck(selected)
+            first = [item for item in selected if not item['_factcheck']['ok']]
+            if first:
+                selected = await self._repair(topic, subscription, drafts, selected, attribution)
+                failed = [item for item in selected if not item['_factcheck']['ok']]
+                logger.warning('新闻 %s 事实核查 %d/%d 条未通过，重译后仍有 %d 条改发原文 [%s]: %s', subscription.id,
+                               len(first), len(selected), len(failed), attribution,
+                               '; '.join(','.join(item['_factcheck']['reasons'][:3]) for item in first))
         # Rendering also validates the complete message before caching or committing a send intent.
         if selected:
             if hasattr(topic, 'fit'):
@@ -281,7 +291,8 @@ class NewsPipeline:
             if identity in identities or (not preview and self.store.seen(subscription.id, item, identity)):
                 continue
             identities.add(identity)
-            publishable.append({**item, '_delivery_key': identity, '_provider': provider, '_model': model})
+            # A repaired item already names the model that wrote its final text.
+            publishable.append({'_provider': provider, '_model': model, **item, '_delivery_key': identity})
         if not publishable:
             return None
         if getattr(topic, 'layout', False):
@@ -295,6 +306,46 @@ class NewsPipeline:
         if not 1 <= len(embeds) <= 10 or sum(len(embed) for embed in embeds) > 5800:
             raise ValueError('新闻单次投递超过 Discord 总容量')
         return Edition(embeds, publishable)
+
+    async def _repair(self, topic, subscription, drafts, checked, attribution):
+        """Ask a different model to rewrite the items that failed the fact-check, once.
+
+        `drafts` are the items before the check, `checked` the same items after it (failed
+        ones already carry the original-text fallback). A rewrite replaces the fallback only
+        when it passes the same check; any error here leaves `checked` as it is.
+        """
+        fields = getattr(topic, 'text_fields', None)
+        failed = [index for index, item in enumerate(checked) if not item['_factcheck']['ok']]
+        if not fields or not failed:
+            return checked
+        day = datetime.datetime.now(datetime.UTC).date().isoformat()
+        if not self.store.reserve_budget(day, factcheck.REPAIR_OUTPUT_TOKENS,
+                                         max_calls=self.max_calls, max_tokens=self.max_tokens):
+            return checked
+        _, first_model = factcheck.parse_attribution(attribution)
+        data, system = factcheck.repair_request(
+            [(drafts[index], checked[index]['_factcheck']['reasons']) for index in failed], fields)
+        try:
+            async with self.model_slots, asyncio.timeout(90):
+                result = await ai_client.generate_ai(
+                    json.dumps(data, ensure_ascii=False, separators=(',', ':')), system=system,
+                    use_search=False, json_mode=True, max_output_tokens=factcheck.REPAIR_OUTPUT_TOKENS,
+                    skip_models=frozenset({first_model} if first_model else ()))
+            rewrites = factcheck.parse_repair(result.text, len(failed), fields)
+            provider, model = factcheck.parse_attribution(result.attribution)
+        except Exception as error:  # noqa: BLE001 - the original-text fallback stays in place
+            logger.warning('新闻 %s 事实核查重译失败，保留原文 [%s]: %s', subscription.id, type(error).__name__, error)
+            return checked
+        checked = list(checked)
+        for position, index in enumerate(failed):
+            if position not in rewrites:
+                continue
+            rewritten = topic.factcheck([{**drafts[index], **rewrites[position]}])[0]
+            if rewritten['_factcheck']['ok']:
+                rewritten['_factcheck'] = {'ok': True, 'reasons': [], 'repaired': True,
+                                           'first_reasons': checked[index]['_factcheck']['reasons']}
+                checked[index] = {**rewritten, '_provider': provider, '_model': model}
+        return checked
 
     async def _profile(self, subscription):
         if self.profile_provider is None:

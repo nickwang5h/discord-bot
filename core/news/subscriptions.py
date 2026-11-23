@@ -1,4 +1,5 @@
 """Public settings describe subscriptions; SQLite holds no mutable configuration."""
+import dataclasses
 import datetime
 import re
 
@@ -8,12 +9,15 @@ from core.news.personal import PERSONAL_GROUPS
 from core.news.sources import GROUP_NAMES
 
 DEFAULTS = [
-    {'id': 'general', 'topic': 'general', 'source_groups': ['general'],
+    # General and discovery reach the same readers and must not repeat each other. Discovery
+    # goes out after the morning general edition so it can see what that one delivered.
+    {'id': 'general', 'topic': 'general', 'source_groups': ['general'], 'avoid': ['discovery'],
      'times': ['08:45', '15:30'], 'channel_setting': 'NEWS_CHANNEL_ID', 'max_candidates': 36},
-    {'id': 'discovery', 'topic': 'discovery', 'source_groups': ['discovery'],
-     'times': ['08:00', '18:00'], 'channel_setting': 'TEST_NEWS_CHANNEL_ID'},
-    {'id': 'power-us-ca', 'topic': 'power_projects', 'source_groups': ['general', 'discovery'],
-     'times': ['12:00'], 'channel_setting': 'TEST_NEWS_CHANNEL_ID', 'params': {'countries': ['US', 'CA']}},
+    {'id': 'discovery', 'topic': 'discovery', 'source_groups': ['discovery'], 'avoid': ['general'],
+     'times': ['09:15', '18:00'], 'channel_setting': 'TEST_NEWS_CHANNEL_ID'},
+    # Once at noon in the general news channel, and only when there is something to report.
+    {'id': 'power-us-ca', 'topic': 'power_projects', 'source_groups': ['power', 'general', 'discovery'],
+     'times': ['12:00'], 'channel_setting': 'NEWS_CHANNEL_ID', 'params': {'countries': ['US', 'CA']}},
     # Private: the owner's own feeds, delivered to the owner's inbox channel only.
     {'id': 'following', 'topic': 'following', 'source_groups': ['following'],
      'times': ['08:20', '18:20'], 'channel_setting': 'INBOX_CHANNEL_ID'},
@@ -30,7 +34,7 @@ def bounded_int(value, minimum, maximum):
 
 def parse_subscription(raw, topics, channels):
     allowed = {'id', 'topic', 'source_groups', 'times', 'channel_id', 'channel_setting',
-               'params', 'max_candidates', 'max_output_tokens', 'enabled'}
+               'params', 'max_candidates', 'max_output_tokens', 'enabled', 'avoid'}
     if not isinstance(raw, dict) or set(raw) - allowed:
         raise ValueError('订阅字段无效')
     identity = raw.get('id')
@@ -67,10 +71,18 @@ def parse_subscription(raw, topics, channels):
     enabled = raw.get('enabled', True)
     if type(enabled) is not bool:
         raise ValueError('enabled 必须为布尔值')
+    avoid = raw.get('avoid', [])
+    if (not isinstance(avoid, list) or len(avoid) > 4 or len(set(map(str, avoid))) != len(avoid)
+            or any(not isinstance(a, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,47}', a) or a == identity
+                   for a in avoid)):
+        raise ValueError('avoid 必须为其他订阅 ID 的列表')
+    # A personal digest neither feeds nor reads another subscription's history.
+    if personal and avoid:
+        raise ValueError('个人订阅不使用 avoid')
     return Subscription(identity, topic, tuple(groups), tuple(sorted(times)), channel, params,
                         bounded_int(raw.get('max_candidates', 40), 1, 40),
                         bounded_int(raw.get('max_output_tokens', getattr(topics[topic], 'max_output_tokens', 3000)),
-                                    256, MAX_OUTPUT_TOKENS), enabled)
+                                    256, MAX_OUTPUT_TOKENS), enabled, tuple(avoid))
 
 
 def load_subscriptions(topics):
@@ -89,7 +101,13 @@ def load_subscriptions(topics):
             seen.add(subscription.id)
         except (ValueError, TypeError) as error:
             errors.append(f'配置项 {index + 1}: {error}')
-    return [sub for sub in subscriptions if sub.id not in duplicates], errors
+    valid = [sub for sub in subscriptions if sub.id not in duplicates]
+    # Personal deliveries never become another subscription's model context.
+    private = {sub.id for sub in valid if sub.topic in PERSONAL_TOPICS}
+    for sub in valid:
+        if private.intersection(sub.avoid):
+            errors.append(f'订阅 {sub.id}: avoid 不能引用个人订阅，已忽略')
+    return [dataclasses.replace(sub, avoid=tuple(a for a in sub.avoid if a not in private)) for sub in valid], errors
 
 
 def period_for(subscription, now, *, scheduled=False):

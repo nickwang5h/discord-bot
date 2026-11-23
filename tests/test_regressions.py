@@ -98,11 +98,14 @@ class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [spec.model_id for spec in ai_client.OPENROUTER_MODELS],
             [
-                "nvidia/nemotron-3-super-120b-a12b:free",
+                "nvidia/nemotron-3.5-super-vl:free",
+                "baidu/ernie-5.5-flash-preview:free",
                 "nvidia/nemotron-3-ultra-550b-a55b:free",
                 "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
             ],
         )
+        # OpenRouter's catalogue (2026-11-22) lists response_format for the first two only.
+        self.assertEqual([spec.supports_json for spec in ai_client.OPENROUTER_MODELS], [True, True, False, False])
         self.assertFalse(any(spec.model_id.startswith("google/") for spec in ai_client.OPENROUTER_MODELS))
         self.assertEqual(ai_client.DEFAULT_GEMINI_MODEL, "gemini-3.6-flash")
 

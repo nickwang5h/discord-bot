@@ -155,11 +155,14 @@ Qwen 网页检索与 Gemini 原生搜索互不自动切换：两个抓取源都�
 
 OpenRouter 当前内置节点：
 
-1. `nvidia/nemotron-3-super-120b-a12b:free`
-2. `nvidia/nemotron-3-ultra-550b-a55b:free`（仅普通文本）
-3. `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`
+1. `nvidia/nemotron-3.5-super-vl:free`
+2. `baidu/ernie-5.5-flash-preview:free`
+3. `nvidia/nemotron-3-ultra-550b-a55b:free`（仅普通文本）
+4. `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`（仅普通文本）
 
-模型目录在 2026-07-30 通过官方 API 实时验证。`scripts/healthcheck.py --live` 会重新验证列表，避免长期依赖文档中的静态状态。OpenRouter 列表不含 Google 节点；JSON mode 会跳过不支持 `response_format` 的 Ultra，然后继续尝试 GPT-OSS 和 Nano。
+模型目录在 2026-11-22 对照 OpenRouter 公开模型 API 更新：原首选 `nvidia/nemotron-3-super-120b-a12b:free`
+已下架，Nano 不再声明 `response_format`；Groq（Qwen 3.8、GPT-OSS 120b/20b）与智谱（GLM-4.7/4.5 Flash）
+同日对照官方文档仍在列。`scripts/healthcheck.py --live` 会重新验证列表，避免长期依赖文档中的静态状态。OpenRouter 列表不含 Google 节点；JSON mode 会跳过不支持 `response_format` 的 Ultra 和 Nano。
 
 Qwen 3.6 在本项目中使用非思考模式，并要求 Groq 只返回最终答案；GPT-OSS 采用 low reasoning；智谱 GLM-4.7/4.5 Flash 都关闭 thinking。这些设置避免基础分类和摘要的推理过程占满 completion token 预算。Groq 已公告 `llama-3.3-70b-versatile` 将于 2026-08-16 下线，因此不再把它列为候选。OpenAI-compatible 接口若返回 `finish_reason=length`，会将该候选视为失败并切换到下一个模型，不会把不完整正文交给 Discord 或 JSON 解析器。
 
@@ -253,19 +256,32 @@ Discord 入口，负责命令、触发和频道交互；不按频道选择业务
 SQLite 状态、通用选编／投递流程、公开订阅配置。`topics/` 显式注册综合新闻、视野拾遗和
 强电动态，不放进会被启动器自动加载的 `cogs/`。
 
+综合新闻与视野拾遗面向同一批读者，不能重复（2026-11-22：此前两组共用 BBC World、Ars Technica、
+TechCrunch 且互不去重，14 天里视野拾遗 130 条有 9 条与综合新闻同链接）。三层处理：①两组信源不再
+有交集，视野拾遗只保留 The Verge、Wired、NYT World、CNBC Finance、Nature、OpenAI；②订阅字段
+`avoid` 列出不能重复的其他订阅（默认两者互指），`pipeline.build` 把对方已投递的同链接、同标题
+素材从候选中去掉（预览同样生效）；③对方的投递并入发给模型的历史（`recently_delivered`／
+`already_recommended`），由模型跳过换了媒体或标题的同一事件。本订阅自己的“同链接须写新进展”校验
+仍只看自己的历史。视野拾遗早间改在 09:15，排在综合新闻 08:45 之后。`avoid` 不能用于个人订阅，
+也不能引用个人订阅（个人投递不进入共享专题的模型输入）。
+
 采集复用 `core.feeds` 的异步 RSS 入口，按 RSS URL 合并请求，每源最多40条、72小时窗口；
 只保存原始标题、摘要、来源、URL、发布时间、首次发现时间及内容版本，不保存 AI 摘要
 作为其他专题的证据。采集并不按疑似事件合并媒体链接。SQLite 当前素材最多3000条、
-原始版本最多6000条，保留7天。专题分别控制候选量：综合新闻8个来源每发布方4条、
-最多36条；视野拾遗9个来源交错最多40条、最多10条推荐；电力专题最多40候选、4条结果。
+原始版本最多6000条，保留7天。专题分别控制候选量：综合新闻6个来源每发布方4条、
+最多36条；视野拾遗6个来源交错最多40条、最多10条推荐；电力专题最多40候选、4条结果。
 未提供发布时间不会用采集时间冒充新发布，电力专题在此情况下保守跳过。电力专题的候选
 过滤是确定性正则：原文含电力关键词（含 grids/substations/transformers 复数）且明确出现所选
-国家名（US/United States/American、Canada/Canadian）；来源是综合与视野拾遗的大众媒体 RSS，
-真正的项目里程碑稀少，多数期次合理地为空。
+国家名（US/United States/American、Canada/Canadian）或该国的州名／省名（行业媒体通常只写
+Texas、Ontario；Georgia 与国名同形不算，两字母邮政缩写不算），`country_quote` 同样可以是州／省名。
+来源是行业媒体组 `power`（Utility Dive、POWER Magazine、Power Engineering、Electrical Business，
+2026-11-22 试取均有带日期和摘要的条目）加综合与视野拾遗两组；此前只有大众媒体 RSS，14 天 12 期
+全部为空。没有合格条目的期次不发送任何消息。
 
 公开配置继续使用 `core.settings` / `JsonStore`，默认综合新闻08:45／15:30投递到
-`NEWS_CHANNEL_ID`，视野拾遗08:00／18:00投递到 `TEST_NEWS_CHANNEL_ID`；新增
-`power-us-ca` 默认美加、每天12:00使用同一展示频道。专题本身不包含频道 ID。
+`NEWS_CHANNEL_ID`，视野拾遗09:15／18:00投递到 `TEST_NEWS_CHANNEL_ID`；
+`power-us-ca` 默认美加、每天12:00投递到综合新闻频道 `NEWS_CHANNEL_ID`（关注电力的是共享频道的
+读者，不是所有者的收件箱），有内容才发。专题本身不包含频道 ID。
 `NEWS_SUBSCRIPTIONS` 可声明独立地区、频率、频道与模型预算；普通专题不需要新增 Cog。
 天气、游戏、链接总结和 HN 日报不参与此次新闻重构。
 
@@ -374,7 +390,15 @@ components v2 的 `LayoutView`（一个紫色 Container，每条 `TextDisplay` �
 (b) 括号里的拉丁人名至少有一个可识别部分（去掉 Pope/President 等头衔、罗马数字、全大写缩写）在原文出现，
 其他首字母大写、4 字母以上的拉丁专名也须出现（大小写、重音、连字符、所有格、末尾一个字母差异不计）；
 (c) 一个小词表里易混的人物（加兰特/甘茨、温格/阿尔特塔、方济各/利奥十四世等）用中文写出时原文须有其
-拉丁名。规则宁可漏报不误报，解析不了的一律放行。未通过的条目不丢弃：标题换成 `「原文」` + 原文英文
+拉丁名。规则宁可漏报不误报，解析不了的一律放行。中文信源（原文汉字多于拉丁字母，如华尔街见闻）只查
+数字：原文的 `606.18亿` 这类中文量级按实际数值比对，提示词要求的拉丁人名在中文原文里本来就没有，
+不再判为缺失，词表人物以原文出现同一中文名为准。
+
+未通过的条目不丢弃，先换模型重译一次（`pipeline._repair`，2026-11-22）：把这些条目的原文标题、
+摘要和被查出的问题交给 `generate_ai(skip_models={首稿模型})`，即免费链中除首稿模型外第一个能回答的
+模型（通常是 Groq GPT-OSS 或智谱），输出上限 1500 token、90 秒，占一次新闻日调用额度；重写稿长度、
+中文、无链接合格且通过同一核查才替换，记 `_factcheck.repaired=true`、`first_reasons`，条目的
+`_provider`/`_model` 改为重译模型。重译出错、格式不对或仍未通过时才走原文兜底：标题换成 `「原文」` + 原文
 标题，摘要换成原文 RSS 摘要截断，二者合计不超过中文标题+摘要上限（综合 180、视野/following 200），
 `why_read` 清空，所以渲染容量不变、整期照常发出。每条结果带 `_factcheck`（ok、reasons）以及从
 attribution 解析出的 `_provider`、`_model`，写入运行发送意图与投递记录，便于按模型统计错误率；

@@ -73,6 +73,23 @@ class PowerTopicTests(unittest.TestCase):
                 new_fact='North Grid awarded the tender for Maple Project in Ottawa.'), candidates, sub(), [])
         self.assertEqual(selected[0]['stage'], 'awarded')
 
+    def test_state_or_province_names_are_country_evidence(self):
+        from dataclasses import replace
+        ontario = replace(power_article(text='OPG approved the Darlington substation in Ontario on Monday.'),
+                          title='Grid project update')
+        self.assertEqual(len(self.topic.prepare([ontario], sub(), [], '午后').candidates), 1)
+        texas = replace(power_article(text='Oncor approved the Lone Star substation in Texas on Monday.'),
+                        title='Grid project update')
+        self.assertEqual(self.topic.prepare([texas], sub(['CA']), [], '午后').candidates, [])
+        prepared = self.topic.prepare([texas], sub(['US']), [], '午后')
+        self.assertEqual(len(prepared.candidates), 1)
+        answer = payload(project='Lone Star', actor='Oncor', location=None, equipment=None, country='US',
+                         country_quote='Texas', event_date=None,
+                         new_fact='Oncor approved the Lone Star substation in Texas on Monday.')
+        self.assertEqual(self.topic.validate(answer, prepared.candidates, sub(['US']), [])[0]['country'], 'US')
+        georgia = replace(texas, content='Georgia Power approved the Peach substation on Monday.')
+        self.assertEqual(self.topic.prepare([georgia], sub(['US']), [], '午后').candidates, [])
+
     def test_no_candidates_for_unrelated_scope_or_unknown_publication(self):
         prepared = self.topic.prepare([power_article()], sub(['DE']), [], '午后')
         self.assertEqual(prepared.candidates, [])
