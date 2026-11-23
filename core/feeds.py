@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import aiohttp
 import feedparser
 
+from core.web_fetcher import read_capped
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_HEADERS = {"User-Agent": "DiscordDigestBot/1.0 (+RSS reader)"}
@@ -93,7 +95,7 @@ async def fetch_feed(
     try:
         async with session.get(source.url) as response:
             response.raise_for_status()
-            content = await response.content.read(MAX_FEED_BYTES + 1)
+            content = await read_capped(response, MAX_FEED_BYTES)
             if len(content) > MAX_FEED_BYTES:
                 raise RuntimeError("RSS 内容超过 5 MB 限制")
         return await asyncio.to_thread(

@@ -15,7 +15,7 @@ import aiohttp
 from config import STATE_ROOT, get_env
 from core.feeds import DEFAULT_HEADERS, MAX_FEED_BYTES, FeedSource, _parse_feed
 from core.storage import JsonStore
-from core.web_fetcher import UnsafeUrlError, _validate_public_url
+from core.web_fetcher import UnsafeUrlError, _validate_public_url, read_capped
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,7 @@ async def probe(entry):
                 if response.status != 200:
                     raise ProbeError(f'HTTP {response.status}' + ('（请填写跳转后的最终地址）'
                                      if 300 <= response.status < 400 else ''))
-                content = await response.content.read(MAX_FEED_BYTES + 1)
+                content = await read_capped(response, MAX_FEED_BYTES)
     except (aiohttp.ClientError, asyncio.TimeoutError) as error:
         raise ProbeError(type(error).__name__) from None
     if len(content) > MAX_FEED_BYTES:

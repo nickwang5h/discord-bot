@@ -14,6 +14,21 @@ class UnsafeUrlError(ValueError):
     pass
 
 
+async def read_capped(response: aiohttp.ClientResponse, max_bytes: int) -> bytes:
+    """Read the body to its end or until it is over max_bytes.
+
+    content.read(n) returns only the chunk that has already arrived. The result holds at most
+    max_bytes + 1 bytes, so the caller's own `len(body) > max_bytes` check still reports oversize.
+    """
+    body = bytearray()
+    while len(body) <= max_bytes:
+        chunk = await response.content.read(max_bytes + 1 - len(body))
+        if not chunk:
+            break
+        body += chunk
+    return bytes(body)
+
+
 async def _validate_public_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -75,7 +90,7 @@ async def fetch_public_html(url: str) -> str:
                 if not any(kind in content_type for kind in ("text/html", "application/xhtml+xml", "text/plain")):
                     raise RuntimeError("该 URL 不是可总结的文本网页")
 
-                content = await response.content.read(MAX_HTML_BYTES + 1)
+                content = await read_capped(response, MAX_HTML_BYTES)
                 if len(content) > MAX_HTML_BYTES:
                     raise RuntimeError("网页内容超过 2 MB 限制")
                 encoding = response.charset or "utf-8"

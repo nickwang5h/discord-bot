@@ -14,6 +14,7 @@ import discord
 
 from config import STATE_ROOT, TZ
 from core.storage import JsonStore
+from core.web_fetcher import read_capped
 
 logger = logging.getLogger(__name__)
 
@@ -386,12 +387,9 @@ async def _get_steam_search_page(session: aiohttp.ClientSession, start: int, tim
                            allow_redirects=False) as response:
         if response.status != 200:
             raise RuntimeError(f"Steam 搜索返回状态码 {response.status}")
-        # content.read(n) 只返回已到达的一块；循环读到结尾或超限。
-        body = b""
-        while chunk := await response.content.read(64 * 1024):
-            body += chunk
-            if len(body) > STEAM_SEARCH_MAX_BYTES:
-                raise RuntimeError("Steam 搜索结果过大")
+        body = await read_capped(response, STEAM_SEARCH_MAX_BYTES)
+        if len(body) > STEAM_SEARCH_MAX_BYTES:
+            raise RuntimeError("Steam 搜索结果过大")
     data = json.loads(body)
     return data.get("results_html", "") if isinstance(data, dict) and data.get("success") == 1 else ""
 

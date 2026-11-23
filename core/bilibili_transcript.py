@@ -9,6 +9,8 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 import aiohttp
 
+from core.web_fetcher import read_capped
+
 CANONICAL_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
 SHORT_HOSTS = {"b23.tv"}
 SUBTITLE_HOSTS = {"aisubtitle.hdslb.com"}
@@ -173,7 +175,7 @@ async def _fetch_json(
                 raise BilibiliTranscriptError("authentication_required", "B站字幕需要登录凭据。")
             if response.status != 200:
                 raise BilibiliTranscriptError(error_code, "B站字幕请求失败。")
-            raw = await response.content.read(max_bytes + 1)
+            raw = await read_capped(response, max_bytes)
     except BilibiliTranscriptError:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError) as error:
