@@ -32,7 +32,7 @@ _PATH_RE = re.compile(r'/[A-Za-z0-9_\-./:@%+~,=]{1,199}')
 DEFAULT_SOURCES = [
     {'name': 'Ottawa Citizen', 'category': 'Ottawa', 'url': 'https://ottawacitizen.com/feed'},
     {'name': 'CBC Ottawa', 'category': 'Ottawa', 'url': 'https://www.cbc.ca/webfeed/rss/rss-canada-ottawa'},
-    {'name': 'CityNews Ottawa', 'category': 'Ottawa', 'url': 'https://ottawa.citynews.ca/feed'},
+    {'name': 'CityNews Ottawa', 'category': 'Ottawa', 'url': 'https://ottawa.citynews.ca/feed/'},
     {'name': 'Sudbury.com', 'category': 'Sudbury', 'url': 'https://www.sudbury.com/rss'},
     {'name': 'CBC Sudbury', 'category': 'Sudbury', 'url': 'https://www.cbc.ca/webfeed/rss/rss-canada-sudbury'},
     {'name': 'Northern Ontario Business', 'category': 'Sudbury', 'url': 'https://www.northernontariobusiness.com/rss'},
