@@ -13,6 +13,7 @@ from core.jobs import run_delivery_job
 from core.weather import (
     COLOR_SEVERE,
     MAX_FORECAST_DAYS,
+    MAX_MORNING_CITIES,
     CityNotFoundError,
     build_morning_weather_embeds,
     fetch_forecast_range,
@@ -57,11 +58,14 @@ class Weather(commands.Cog):
     def _get_target_cities(self) -> list[str]:
         configured = settings.get_setting("WEATHER_CITIES", DEFAULT_CITIES)
         if isinstance(configured, str):
-            cities = [c.strip() for c in configured.split(",") if c.strip()]
-            return cities or DEFAULT_CITIES
-        if isinstance(configured, list) and configured:
-            return [str(c).strip() for c in configured if str(c).strip()]
-        return DEFAULT_CITIES
+            cities = [c.strip() for c in configured.split(",") if c.strip()] or DEFAULT_CITIES
+        elif isinstance(configured, list) and configured:
+            cities = [str(c).strip() for c in configured if str(c).strip()]
+        else:
+            cities = DEFAULT_CITIES
+        if len(cities) > MAX_MORNING_CITIES:
+            logger.warning("WEATHER_CITIES 共 %s 个城市，只播报前 %s 个", len(cities), MAX_MORNING_CITIES)
+        return cities[:MAX_MORNING_CITIES]
 
     async def _build_daily_embeds(self) -> list[discord.Embed]:
         cities = self._get_target_cities()
@@ -90,12 +94,19 @@ class Weather(commands.Cog):
             logger.warning("未配置 WEATHER_CHANNEL_ID 或 NEWS_CHANNEL_ID，跳过每日天气推送")
             return
 
-        channel = self.bot.get_channel(int(channel_id))
+        try:
+            channel = self.bot.get_channel(int(channel_id))
+        except (TypeError, ValueError):
+            logger.error("频道 ID 不是数字，跳过每日天气推送: %r", channel_id)
+            return
         if not channel:
             logger.error("找不到配置的频道 ID: %s", channel_id)
             return
 
-        await self._run_daily(channel)
+        try:
+            await self._run_daily(channel)
+        except Exception:
+            logger.exception("每日天气预报推送失败")
 
     @weather_daily.before_loop
     async def before_weather_daily(self):

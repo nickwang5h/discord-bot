@@ -191,9 +191,12 @@ class Inbox(commands.Cog):
         await interaction.response.send_message(
             f"**未读 {len(items)} 条**\n" + "\n".join(lines) + more, ephemeral=True)
 
-    @app_commands.command(name="set_inbox_channel", description="[管理员] 设置收件箱频道")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="set_inbox_channel", description="[管理员] 设置收件箱频道（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_inbox_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self._is_owner(interaction.user.id):
+            await interaction.response.send_message("收件箱只对机器人所有者开放。", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("INBOX_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(

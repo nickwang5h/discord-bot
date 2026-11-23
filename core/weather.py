@@ -766,6 +766,10 @@ async def get_weather_embed(city: str, session: aiohttp.ClientSession, lang: str
             return embed
 
 
+# One embed per city in the morning message, and a Discord message carries at most 10 embeds.
+MAX_MORNING_CITIES = 10
+
+
 async def build_morning_weather_embeds(
     cities: list[str],
     session: aiohttp.ClientSession,

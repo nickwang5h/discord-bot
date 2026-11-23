@@ -91,7 +91,11 @@ def create_ai_embed(title: str, description: str, color: discord.Color = discord
 
     if len(description) > 4000:
         description = description[:4000] + "\n\n...(内容过长，已被自动截断)"
-        
+
+    # 标题常含用户输入（提问、概念名），Discord 限 256 字符。
+    if len(title) > 256:
+        title = title[:255] + "…"
+
     embed = discord.Embed(
         title=title,
         description=description,

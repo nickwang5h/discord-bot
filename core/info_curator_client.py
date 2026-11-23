@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import aiohttp
 
 import config
+from core.web_fetcher import read_capped
 
 
 BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"}
@@ -338,7 +339,7 @@ async def _fetch_curated_video(
                 json=payload,
                 allow_redirects=False,
             ) as response:
-                raw = await response.content.read(MAX_WORKER_RESPONSE_BYTES + 1)
+                raw = await read_capped(response, MAX_WORKER_RESPONSE_BYTES)
                 status = response.status
     except (aiohttp.ClientError, asyncio.TimeoutError) as error:
         raise InfoCuratorError("worker_unavailable", "视频总结服务暂时不可用。") from error

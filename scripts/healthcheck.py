@@ -45,11 +45,19 @@ class Report:
         )
 
 
-def run_offline_checks(report: Report, *, strict: bool) -> None:
-    if sys.version_info >= (3, 10):
-        report.ok(f"Python {sys.version.split()[0]}")
+# asyncio.timeout and datetime.UTC are new in Python 3.11.
+MIN_PYTHON = (3, 11)
+
+
+def check_python(report: Report, version_info=sys.version_info) -> None:
+    if tuple(version_info[:2]) >= MIN_PYTHON:
+        report.ok("Python " + ".".join(str(part) for part in version_info[:3]))
     else:
-        report.error("需要 Python 3.10+")
+        report.error(f"需要 Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+")
+
+
+def run_offline_checks(report: Report, *, strict: bool) -> None:
+    check_python(report)
 
     if DISCORD_TOKEN and DISCORD_TOKEN != "your_discord_bot_token_here":
         report.ok("DISCORD_TOKEN 已配置")

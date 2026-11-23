@@ -555,8 +555,11 @@ class WebSearchTests(unittest.TestCase):
 class WikipediaRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_contact_email_is_sent_only_as_wikipedia_request_user_agent(self):
         class FakeContent:
+            def __init__(self):
+                self.chunks = [b'{"query":{"pages":[]}}']
+
             async def read(self, _limit):
-                return b'{"query":{"pages":[]}}'
+                return self.chunks.pop(0) if self.chunks else b""
 
         class FakeResponse:
             content = FakeContent()

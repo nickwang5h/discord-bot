@@ -11,6 +11,7 @@ import aiohttp
 import feedparser
 
 from config import get_env
+from core.web_fetcher import read_capped
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +242,7 @@ def _parse_google_news_feed(data: bytes, *, max_items: int = 3) -> list[SearchSo
 
 async def _read_limited(response: aiohttp.ClientResponse) -> bytes:
     response.raise_for_status()
-    body = await response.content.read(MAX_RESPONSE_BYTES + 1)
+    body = await read_capped(response, MAX_RESPONSE_BYTES)
     if len(body) > MAX_RESPONSE_BYTES:
         raise RuntimeError("检索响应超过 1 MB 限制")
     return body

@@ -292,7 +292,8 @@ Texas、Ontario；Georgia 与国名同形不算，两字母邮政缩写不算）
 General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行环境拼接，不落盘。
 订阅解析拒绝把个人组放进共享专题或投递到 `INBOX_CHANNEL_ID` 以外。所有者通过
 `/source_list`、`/source_add`、`/source_remove`（`cogs/news.py`）经 `JsonStore` 原子
-更新清单；新增前校验主机（https 公网或 RSSHub 路由）并不跟随跳转试取一次。
+更新清单；新增前校验主机（https 公网或 RSSHub 路由）并不跟随跳转试取一次。每小时的常规采集沿用同样约束：
+个人信源不跟随跳转（3xx 记为该源失败），`url` 条目每次请求前再做公网 DNS 校验；共享信源仍跟随跳转。
 `following` 专题在候选阶段按 URL 和归一化标题去掉转发重复及已投递内容。
 
 个人专题（`topic.personal`，目前只有 `following`）在共享流水线里多三处分支，共享专题的
@@ -423,7 +424,7 @@ attribution 解析出的 `_provider`、`_model`，写入运行发送意图与投
 3. 解析今日高低温、体感、紫外线、降水概率、降水量、明日预报与基于天气状况的智能出行提醒（烟尘、雷暴、冻雨、大雪等警报）；
 4. 格式化为 Discord Embed，根据严重警报、下雪、降雨、多云、晴朗匹配视觉色彩，并保留数据来源 Footer。
 
-`cogs.weather` 在每日 07:00 (`America/Toronto`) 通过 `core.jobs.run_delivery_job` 发送预设城市（默认 `Ottawa, Sudbury`）的早间天气播报至 `WEATHER_CHANNEL_ID`（未指定时降级至 `NEWS_CHANNEL_ID`）。同时提供 `/weather [city] [days]` 交互式查询命令，及 `set_weather_channel` / `/test_weather` 管理员配置与测试入口。
+`cogs.weather` 在每日 07:00 (`America/Toronto`) 通过 `core.jobs.run_delivery_job` 发送预设城市（默认 `Ottawa, Sudbury`；每城一张 Embed，Discord 单条消息至多 10 张，因此 `/set_weather_cities` 拒绝超过 10 个、已存的更长列表只播报前 10 个）的早间天气播报至 `WEATHER_CHANNEL_ID`（未指定时降级至 `NEWS_CHANNEL_ID`）。同时提供 `/weather [city] [days]` 交互式查询命令，及 `set_weather_channel` / `/test_weather` 管理员配置与测试入口。
 
 多日预报 `core.weather.fetch_forecast_range(city, date_from, date_to, session)` 只走 Open-Meteo
 （geocoding 复用单日备用通道的 `_geocode_open_meteo()`，8 秒超时）：
@@ -444,7 +445,7 @@ attribution 解析出的 `_provider`、`_model`，写入运行发送意图与投
 `core.gaming` 与 `cogs.gaming` 提供零模型 Token 的自动化游戏降价与限免追踪：
 
 1. **Epic 每周限免**：每周四 11:30 (`America/Toronto`) 定时轮询 Epic 官方促销接口，提取本周免费领取名单、原价、截止时间及下周预告；采用 ISO 周去重缓存，每周至多发送一次至 `GAMING_CHANNEL_ID`（未设置时降级至 `NEWS_CHANNEL_ID`）；提供 `/epic_free` 交互查询。
-2. **Steam 史低、新游好评与愿望单监控**：每日 13:30 (`America/Toronto`) 通过免费 CheapShark REST API 执行两项检查：其一，扫描 Steam 上正在打折、好评 ≥90%、评测 ≥1 万条的游戏（`/deals` 最多 50 页，再按 25 个一批用 `/games?ids=` 取 `cheapestPriceEver`），只保留当前价等于全网历史最低价的，按评测数排序，每次最多推送 10 个；其二，轮询管理员用 `/watch_game` 添加的愿望单（默认为空），在新打折、降价或触及史低时推送。另读取 Steam 商店公开搜索的“热门新品”（`/search/results/?filter=popularnew&sort_by=Released_DESC`，每页 50 款、最多 4 页，响应上限 2 MB、不跟随重定向），挑出上架 7–90 天、好评 ≥95%、评测 ≥500 条的游戏，按好评率排序，每次最多 5 款，每款只推一次（`gaming_new_hits.json`，记录保留 365 天）；这一步失败只记 warning，不影响折扣推送。当天结果合成**一条消息**发送（愿望单、新游好评、好评史低各一张紧凑列表 Embed，每张正文上限 2800 字符、合计 5400 字符，放不下的不记录、留到下次），发送成功后才写入去重缓存。两者共用 `gaming_deals_cache.json` 去重：同一游戏同一价格只推一次，30 天后同价再次出现（下一轮促销）会重新推送。另提供 `/deal <game>` 实时比价、`/watchlist` 查看愿望单、`/watch_game` 与 `/unwatch_game` 管理员增删接口。
+2. **Steam 史低、新游好评与愿望单监控**：每日 13:30 (`America/Toronto`) 通过免费 CheapShark REST API 执行两项检查：其一，扫描 Steam 上正在打折、好评 ≥90%、评测 ≥1 万条的游戏（`/deals` 最多 50 页，再按 25 个一批用 `/games?ids=` 取 `cheapestPriceEver`），只保留当前价等于全网历史最低价的，按评测数排序，每次最多推送 10 个；其二，轮询所有者用 `/watch_game` 添加的愿望单（默认为空），在新打折、降价或触及史低时推送。另读取 Steam 商店公开搜索的“热门新品”（`/search/results/?filter=popularnew&sort_by=Released_DESC`，每页 50 款、最多 4 页，响应上限 2 MB、不跟随重定向），挑出上架 7–90 天、好评 ≥95%、评测 ≥500 条的游戏，按好评率排序，每次最多 5 款，每款只推一次（`gaming_new_hits.json`，记录保留 365 天）；这一步失败只记 warning，不影响折扣推送。当天结果合成**一条消息**发送（愿望单、新游好评、好评史低各一张紧凑列表 Embed，每张正文上限 2800 字符、合计 5400 字符，放不下的不记录、留到下次），发送成功后才写入去重缓存。两者共用 `gaming_deals_cache.json` 去重：同一游戏同一价格只推一次，30 天后同价再次出现（下一轮促销）会重新推送。另提供 `/deal <game>` 实时比价、`/watchlist` 查看愿望单、`/watch_game` 与 `/unwatch_game` 增删接口（愿望单是全局的，与 `/set_*` 一样只认机器人所有者，并以 `default_permissions(administrator)` 对非管理员隐藏）。
 3. **独立频道隔离**：提供 `/set_gaming_channel` 绑定独立 `#gaming` 频道，保持内容分流。
 
 ## 6.7 推送反馈
@@ -590,7 +591,7 @@ description 不超过 3900 字符的 embed。精简不修改 sidecar envelope �
 
 默认未设置 `BOT_STATE_DIR` 时保持本地兼容布局；设置后必须是绝对路径，所有可变 JSON 都移到该根目录，代码 checkout 可只读更新：
 
-- `<state-root>/settings.json`：频道 ID、模型偏好等非敏感运行设置；本地默认对应仓库中的 `settings.json`。
+- `<state-root>/settings.json`：频道 ID、模型偏好等非敏感运行设置；本地默认对应仓库中的 `settings.json`。设置是全局的而 Bot 也在共享服务器里，所以写设置或密钥的 `/set_*` 命令（含 `/set_inbox_channel`）和展示全部频道与模型的只读 `/settings` 只认机器人所有者，并以 `default_permissions(administrator)` 对非管理员隐藏。
 - `<state-root>/data/personal_sources.json`：所有者的个人信源清单（无密钥），由 `/source_add`／`/source_remove` 原子写入；Git 忽略。
 - `<state-root>/data/news.sqlite3`：新闻原始素材／版本、专题结果、本期运行、订阅投递与模型预算；WAL同目录，Git忽略。
 - `<state-root>/data/feedback.sqlite3`：推送反馈的素材快照、曝光、判定、日志与 📥 记录（素材与判定保留 730 天，日志 365 天）；Git 忽略。

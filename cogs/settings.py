@@ -2,14 +2,24 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from core import settings, ai_client
+from core.weather import MAX_MORNING_CITIES
 
 class SettingsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="set_gemini_key", description="[管理员] 设置 Gemini API Key")
-    @app_commands.checks.has_permissions(administrator=True)
+    # Settings are global while the bot also serves shared servers: only the owner writes them.
+    async def _owner_only(self, interaction):
+        if await self.bot.is_owner(discord.Object(id=interaction.user.id)):
+            return True
+        await interaction.response.send_message("全局设置只对机器人所有者开放。", ephemeral=True)
+        return False
+
+    @app_commands.command(name="set_gemini_key", description="[管理员] 设置 Gemini API Key（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_gemini_key(self, interaction: discord.Interaction, api_key: str):
+        if not await self._owner_only(interaction):
+            return
         # 延迟响应以免超时
         await interaction.response.defer(ephemeral=True)
         
@@ -27,71 +37,96 @@ class SettingsCog(commands.Cog):
         else:
             await interaction.followup.send("⚠️ Key 已保存，但加载失败，请检查 Key 是否有效。", ephemeral=True)
 
-    @app_commands.command(name="set_news_channel", description="[管理员] 设置定时新闻推送的频道")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="set_news_channel", description="[管理员] 设置定时新闻推送的频道（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_news_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("NEWS_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将新闻推送频道设置为 {channel.mention}", ephemeral=True)
 
-    @app_commands.command(name="set_test_news_channel", description="[管理员] 设置视野拾遗推送的频道")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="set_test_news_channel", description="[管理员] 设置视野拾遗推送的频道（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_test_news_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("TEST_NEWS_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将视野拾遗推送频道设置为 {channel.mention}", ephemeral=True)
 
-    @app_commands.command(name="set_model", description="[管理员] 设置全局 AI 模型 (例如 gemini-3.5-flash)")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="set_model", description="[管理员] 设置全局 AI 模型 (例如 gemini-3.5-flash)（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_model(self, interaction: discord.Interaction, model_name: str):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("GEMINI_MODEL", model_name)
         await interaction.followup.send(f"✅ 已将默认 AI 模型全局切换为：`{model_name}`\n后续所有回复将使用该模型！", ephemeral=True)
 
-    @app_commands.command(name="set_reading_channel", description="[管理员] 设置每日英文阅读推送的频道")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="set_reading_channel", description="[管理员] 设置每日英文阅读推送的频道（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_reading_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("READING_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将每日英文阅读推送频道设置为 {channel.mention}", ephemeral=True)
 
-    @app_commands.command(name="set_models_channel", description="[管理员] 设置今日思维模型推送的频道")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="set_models_channel", description="[管理员] 设置今日思维模型推送的频道（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_models_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("MODELS_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将今日思维模型推送频道设置为 {channel.mention}", ephemeral=True)
 
-    @app_commands.command(name="set_weather_channel", description="[管理员] 设置每日天气预报推送的频道")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="set_weather_channel", description="[管理员] 设置每日天气预报推送的频道（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_weather_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("WEATHER_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将每日天气预报推送频道设置为 {channel.mention}", ephemeral=True)
 
-    @app_commands.command(name="set_weather_cities", description="[管理员] 设置每日天气播报的城市列表 (用逗号分隔)")
+    @app_commands.command(name="set_weather_cities", description="[管理员] 设置每日天气播报的城市列表 (用逗号分隔)（仅所有者）")
     @app_commands.describe(cities="城市列表，例如: Ottawa, Sudbury 或 渥太华, 萨德伯里")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def set_weather_cities(self, interaction: discord.Interaction, cities: str):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         city_list = [c.strip() for c in cities.replace("，", ",").split(",") if c.strip()]
         if not city_list:
             await interaction.followup.send("❌ 城市列表不能为空。", ephemeral=True)
             return
+        if len(city_list) > MAX_MORNING_CITIES:
+            await interaction.followup.send(
+                f"❌ 最多 {MAX_MORNING_CITIES} 个城市（每个城市一张天气卡片，Discord 单条消息至多 {MAX_MORNING_CITIES} 张）。",
+                ephemeral=True,
+            )
+            return
         settings.set_setting("WEATHER_CITIES", city_list)
         formatted = ", ".join(city_list)
         await interaction.followup.send(f"✅ 已将每日天气播报城市更新为：`{formatted}`", ephemeral=True)
 
-    @app_commands.command(name="set_gaming_channel", description="[管理员] 设置游戏特惠与 Epic 喜加一推送的频道")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="set_gaming_channel", description="[管理员] 设置游戏特惠与 Epic 喜加一推送的频道（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def set_gaming_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         settings.set_setting("GAMING_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将游戏特惠推送频道设置为 {channel.mention}", ephemeral=True)
 
-    @app_commands.command(name="settings", description="[管理员] 查看当前机器人各项运行配置")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="settings", description="[管理员] 查看当前机器人各项运行配置（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def view_settings(self, interaction: discord.Interaction):
+        # The settings name channels and the model for every server the bot serves.
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         current = settings.load_settings()
 

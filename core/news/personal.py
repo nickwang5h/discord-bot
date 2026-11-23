@@ -15,7 +15,7 @@ import aiohttp
 from config import STATE_ROOT, get_env
 from core.feeds import DEFAULT_HEADERS, MAX_FEED_BYTES, FeedSource, _parse_feed
 from core.storage import JsonStore
-from core.web_fetcher import UnsafeUrlError, _validate_public_url
+from core.web_fetcher import UnsafeUrlError, _validate_public_url, read_capped
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ _PATH_RE = re.compile(r'/[A-Za-z0-9_\-./:@%+~,=]{1,199}')
 DEFAULT_SOURCES = [
     {'name': 'Ottawa Citizen', 'category': 'Ottawa', 'url': 'https://ottawacitizen.com/feed'},
     {'name': 'CBC Ottawa', 'category': 'Ottawa', 'url': 'https://www.cbc.ca/webfeed/rss/rss-canada-ottawa'},
-    {'name': 'CityNews Ottawa', 'category': 'Ottawa', 'url': 'https://ottawa.citynews.ca/feed'},
+    {'name': 'CityNews Ottawa', 'category': 'Ottawa', 'url': 'https://ottawa.citynews.ca/feed/'},
     {'name': 'Sudbury.com', 'category': 'Sudbury', 'url': 'https://www.sudbury.com/rss'},
     {'name': 'CBC Sudbury', 'category': 'Sudbury', 'url': 'https://www.cbc.ca/webfeed/rss/rss-canada-sudbury'},
     {'name': 'Northern Ontario Business', 'category': 'Sudbury', 'url': 'https://www.northernontariobusiness.com/rss'},
@@ -162,7 +162,8 @@ def load(reserved_names=()):
 def feed_source(entry):
     """Resolve an entry to a fetchable feed, or None when its runtime switch is absent."""
     if 'url' in entry:
-        return FeedSource(entry['category'], entry['url'], entry['name'])
+        return FeedSource(entry['category'], entry['url'], entry['name'],
+                          follow_redirects=False, public_host_only=True)
     base, path = _rsshub_base(), entry['rsshub']
     if base is None:
         return None
@@ -171,7 +172,8 @@ def feed_source(entry):
         if not uid or not uid.isdecimal():
             return None
         path = path.replace('{uid}', uid)
-    return FeedSource(entry['category'], f"{base}{path}?key={get_env('RSSHUB_ACCESS_KEY')}", entry['name'])
+    return FeedSource(entry['category'], f"{base}{path}?key={get_env('RSSHUB_ACCESS_KEY')}", entry['name'],
+                      follow_redirects=False)
 
 
 def entry_from_input(name, address, category):
@@ -221,7 +223,7 @@ async def probe(entry):
                 if response.status != 200:
                     raise ProbeError(f'HTTP {response.status}' + ('（请填写跳转后的最终地址）'
                                      if 300 <= response.status < 400 else ''))
-                content = await response.content.read(MAX_FEED_BYTES + 1)
+                content = await read_capped(response, MAX_FEED_BYTES)
     except (aiohttp.ClientError, asyncio.TimeoutError) as error:
         raise ProbeError(type(error).__name__) from None
     if len(content) > MAX_FEED_BYTES:
