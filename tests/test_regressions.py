@@ -66,6 +66,13 @@ class MarkdownNormalizationTests(unittest.TestCase):
         self.assertIn("- **A** — B", embed.description)
         self.assertNotIn("<!--MODEL", embed.description)
 
+    def test_embed_title_fits_discord_limit(self):
+        # Titles carry user input (/ask question, /explain concept); Discord rejects over 256.
+        embed = create_ai_embed(f"❓ 提问: {'问' * 300}", "答")
+        self.assertLessEqual(len(embed.title), 256)
+        self.assertTrue(embed.title.startswith("❓ 提问: 问"))
+        self.assertEqual(create_ai_embed("日报", "- item").title, "日报")
+
 
 class AIClientFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
