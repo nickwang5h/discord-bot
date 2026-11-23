@@ -590,7 +590,7 @@ description 不超过 3900 字符的 embed。精简不修改 sidecar envelope �
 
 默认未设置 `BOT_STATE_DIR` 时保持本地兼容布局；设置后必须是绝对路径，所有可变 JSON 都移到该根目录，代码 checkout 可只读更新：
 
-- `<state-root>/settings.json`：频道 ID、模型偏好等非敏感运行设置；本地默认对应仓库中的 `settings.json`。
+- `<state-root>/settings.json`：频道 ID、模型偏好等非敏感运行设置；本地默认对应仓库中的 `settings.json`。设置是全局的而 Bot 也在共享服务器里，所以写设置或密钥的 `/set_*` 命令（含 `/set_inbox_channel`）只认机器人所有者，并以 `default_permissions(administrator)` 对非管理员隐藏。
 - `<state-root>/data/personal_sources.json`：所有者的个人信源清单（无密钥），由 `/source_add`／`/source_remove` 原子写入；Git 忽略。
 - `<state-root>/data/news.sqlite3`：新闻原始素材／版本、专题结果、本期运行、订阅投递与模型预算；WAL同目录，Git忽略。
 - `<state-root>/data/feedback.sqlite3`：推送反馈的素材快照、曝光、判定、日志与 📥 记录（素材与判定保留 730 天，日志 365 天）；Git 忽略。
