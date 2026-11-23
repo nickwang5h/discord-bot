@@ -39,6 +39,13 @@ MIN_CANDIDATES_FOR_EMPTY_RETRY = 10
 MAX_PAGES = 2
 MAX_PAGE_TEXT = 4000
 MAX_PAGE_ITEMS = 6
+# Outer cap on one selection call. Shared topics use the free chain only (worst case
+# ai_client.FREE_CHAIN_TIMEOUT_SECONDS, 140 s); personal topics may try Claude first and still
+# need the whole free chain after a Claude timeout (90 + 140 + 10 = 240 s).
+SHARED_MODEL_TIMEOUT_SECONDS = 180
+PERSONAL_MODEL_TIMEOUT_SECONDS = (
+    ai_client.PERSONAL_CHAIN_TIMEOUT_SECONDS + ai_client.CALLER_TIMEOUT_MARGIN_SECONDS
+)
 
 
 def is_empty_selection(text):
@@ -250,7 +257,8 @@ class NewsPipeline:
                     raise RuntimeError('新闻今日模型预算已用尽')
                 # Personal topics may use Claude; shared topics keep the free chain, call unchanged.
                 routing = {'route': topic.route, 'json_schema': topic.json_schema} if personal else {}
-                async with asyncio.timeout(180):
+                async with asyncio.timeout(PERSONAL_MODEL_TIMEOUT_SECONDS if personal
+                                           else SHARED_MODEL_TIMEOUT_SECONDS):
                     result = await ai_client.generate_ai(raw, system=prepared.system, use_search=False,
                         json_mode=True, max_output_tokens=subscription.max_output_tokens,
                         soft_reject=empty_selection_check(len(prepared.candidates), f'新闻 {subscription.id}'), **routing)

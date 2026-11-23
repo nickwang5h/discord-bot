@@ -175,7 +175,9 @@ Gemini Search 和最后兜底固定使用稳定版 `gemini-3.6-flash`。该模�
 `ai_client.CLAUDE_ROUTES`、`use_search=False`、`ANTHROPIC_API_KEY` 已配置、未停用/冷却、
 且预算允许时，才先调用官方 `anthropic` SDK 的 `AsyncAnthropic`（`claude-opus-5-5`，
 `max_retries=0`，超时 90 秒，非流式）；任何失败都在同一次调用内继续走上面的免费链，
-调用方无感。`json_mode=True` 但没有 `json_schema` 的调用不走 Claude。
+调用方无感。因此走个人路由的调用方，外层超时要容得下 Claude 超时后再走完整条免费链：
+`ai_client.PERSONAL_CHAIN_TIMEOUT_SECONDS` = 90 + 140 = 230 秒，再加
+`CALLER_TIMEOUT_MARGIN_SECONDS` 10 秒，即个人专题 following 与 `recall.answer` 的 240 秒。`json_mode=True` 但没有 `json_schema` 的调用不走 Claude。
 
 | route | effort | Claude `max_tokens` | 输入上限（字符） | 每日次数 |
 |---|---|---|---|---|
@@ -219,7 +221,7 @@ Gemini 出现 `429` 或 `RESOURCE_EXHAUSTED` 时记录服务级 cooldown。冷�
 
 所有请求默认限制 4096 个输出 token。综合新闻选择限制为 3000 输出 token，视野拾遗与 following 选编默认 6000（十条推荐，含思考模型的余量）；探索阅读每期最多 40 条候选，每条 RSS 证据最多 600 字符，只进行一次模型选编，不再每小时打分或二次改写。综合新闻另外受 Discord 单次消息 embed 总字符预算约束。
 
-OpenAI-compatible provider 的超时覆盖整个候选模型池，而不是每个模型重新计时；HTTP 413 会直接终止该 provider 的模型轮询，因为相同 payload 不会因切换模型而缩小（同一次调用里不会再向 Groq 重发，直接进入智谱）。provider 总超时：Groq 20 秒、智谱 30 秒、OpenRouter 60 秒（免费 Nemotron 处理约 6–8k 输入＋3000 输出常超过 25 秒），加 Gemini offline 30 秒，免费链最坏 140 秒，落在新闻 180 秒总超时内。
+OpenAI-compatible provider 的超时覆盖整个候选模型池，而不是每个模型重新计时；HTTP 413 会直接终止该 provider 的模型轮询，因为相同 payload 不会因切换模型而缩小（同一次调用里不会再向 Groq 重发，直接进入智谱）。provider 总超时：Groq 20 秒、智谱 30 秒、OpenRouter 60 秒（免费 Nemotron 处理约 6–8k 输入＋3000 输出常超过 25 秒），加 Gemini offline 30 秒，免费链最坏 140 秒（`ai_client.FREE_CHAIN_TIMEOUT_SECONDS`，由各段超时相加），落在共享专题 180 秒总超时内；个人专题先试 Claude，总超时见 §4.2.1（240 秒）。
 
 Groq 免费档按模型限制每分钟输入 token（`qwen/qwen3.8-27b` 为 7000，跨请求累计；单次超过即 413，累计超过即 429）。`ai_client` 在进程内维护滚动 60 秒的输入 token 账（`claude_budget.estimate_input_tokens` 的保守估算，含 system，在发请求前记账，所有 Groq 调用共用）：窗口内已有请求且加上本次会超过 7000 时，本次直接跳过 Groq 进入智谱，不去拿注定的 413/429；窗口为空时单个请求总会尝试。账本只在本进程内，重启清零，不是 Groq 端精确计量。
 
@@ -326,7 +328,7 @@ General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行
 仍依赖模型，不把 RSS 推荐等同完整事实核验或买家搜索。
 
 每份订阅独立加锁，定时运行互不等待；全新闻共享模型并发（默认2）、UTC日逻辑调用额度
-（默认24次）和输出token预留（默认72000）。单次输出token默认取专题的 `max_output_tokens`（综合与电力3000，视野拾遗与 following 6000），配置上限6000，180秒总超时，
+（默认24次）和输出token预留（默认72000）。单次输出token默认取专题的 `max_output_tokens`（综合与电力3000，视野拾遗与 following 6000），配置上限6000，总超时共享专题180秒、个人专题 following 240秒（`pipeline.SHARED_MODEL_TIMEOUT_SECONDS`／`PERSONAL_MODEL_TIMEOUT_SECONDS`），
 不把 provider 内部 fallback 计量冒充精确账单。没有候选不调用模型，空选稿不发送。
 
 空选稿软失败：候选 ≥ 10（`pipeline.MIN_CANDIDATES_FOR_EMPTY_RETRY`）时，模型返回格式正确但为空的
@@ -499,6 +501,8 @@ attribution 解析出的 `_provider`、`_model`，写入运行发送意图与投
   编号附链接。无命中不调作答模型；作答失败（`RecallError`）发送零模型兜底的命中列表。收藏
   条目没有 URL 时用收件箱 `origin` 或卡片消息补跳转链接。每次调用在 `usage` 表按本地日期计数。
   免费链额度为 `RECALL_LIMITS`（默认每天 40 次、28,000 输出 token），Claude 侧由 §4.2.1 约束。
+  规划外层超时 45 秒（超时即用确定性检索词）；作答外层超时 240 秒，容得下 Claude 超时后再走完
+  免费链（§4.2.1），连同规划仍远在 deferred interaction 的 15 分钟有效期内。
 - **每周回看**（`core/knowledge/review.py`，纯统计，不调模型）：周界为 `BOT_TIMEZONE` 的周一
   00:00（跨夏令时的那周为 167／169 小时）。读取反馈库 `stats(since, until=, by=, personal=)`、
   收件箱 `items()`、知识库 `usage_count()`／`recent()`／`stats()` 与信源清单，输出曝光（个人／

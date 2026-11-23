@@ -41,11 +41,15 @@ OPENROUTER_MODELS = [
     ModelSpec("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", supports_json=False),
 ]
 
-# Provider-wide time budgets (each covers that provider's whole model pool). Free chain
-# worst case: 20 + 30 + 60 + Gemini 30 = 140 s, inside the news pipeline's 180 s cap.
+# Provider-wide time budgets (each covers that provider's whole model pool).
 GROQ_TIMEOUT_SECONDS = 20
 ZHIPU_TIMEOUT_SECONDS = 30
 OPENROUTER_TIMEOUT_SECONDS = 60
+GEMINI_TIMEOUT_SECONDS = 30
+# Free chain worst case without search: every provider uses its whole budget (140 s).
+FREE_CHAIN_TIMEOUT_SECONDS = (
+    GROQ_TIMEOUT_SECONDS + ZHIPU_TIMEOUT_SECONDS + OPENROUTER_TIMEOUT_SECONDS + GEMINI_TIMEOUT_SECONDS
+)
 # Groq free tier: qwen/qwen3.8-27b allows 7000 input tokens per minute, counted across
 # requests. A second request that would overflow the rolling minute skips Groq (→ Zhipu)
 # instead of collecting a 413/429; a lone request is always tried (413 is instant).
@@ -56,6 +60,10 @@ _groq_input_window: deque[tuple[float, int]] = deque()
 CLAUDE_MODEL = "claude-opus-5-5"
 CLAUDE_TIMEOUT_SECONDS = 90.0
 CLAUDE_DEFAULT_COOLDOWN_SECONDS = 60.0
+# A personal route tries Claude, then the whole free chain in the same call: 90 + 140 = 230 s.
+PERSONAL_CHAIN_TIMEOUT_SECONDS = CLAUDE_TIMEOUT_SECONDS + FREE_CHAIN_TIMEOUT_SECONDS
+# A caller's outer cap adds this to the chain it waits for (time between and around requests).
+CALLER_TIMEOUT_MARGIN_SECONDS = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,10 +230,10 @@ async def _ask_gemini(
                 contents=text,
                 config=config,
             ),
-            timeout=30.0,
+            timeout=GEMINI_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError as error:
-        raise ProviderError("Gemini API 请求超时 (30s)") from error
+        raise ProviderError(f"Gemini API 请求超时 ({GEMINI_TIMEOUT_SECONDS}s)") from error
 
     content = (response.text or "").strip()
     if not content:
