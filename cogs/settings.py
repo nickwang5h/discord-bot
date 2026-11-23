@@ -121,9 +121,12 @@ class SettingsCog(commands.Cog):
         settings.set_setting("GAMING_CHANNEL_ID", str(channel.id))
         await interaction.followup.send(f"✅ 已将游戏特惠推送频道设置为 {channel.mention}", ephemeral=True)
 
-    @app_commands.command(name="settings", description="[管理员] 查看当前机器人各项运行配置")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="settings", description="[管理员] 查看当前机器人各项运行配置（仅所有者）")
+    @app_commands.default_permissions(administrator=True)
     async def view_settings(self, interaction: discord.Interaction):
+        # The settings name channels and the model for every server the bot serves.
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         current = settings.load_settings()
 

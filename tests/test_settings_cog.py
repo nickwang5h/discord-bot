@@ -83,6 +83,22 @@ class GlobalSettingsOwnerOnlyTests(unittest.IsolatedAsyncioTestCase):
         for name in SETTINGS_WRITES:
             self.assertTrue(getattr(self.cog, name).default_permissions.administrator, name)
 
+    async def test_only_the_owner_views_settings(self):
+        # /settings shows channel IDs and the model of every server the bot serves.
+        load = patch.object(SettingsCog.view_settings.callback.__globals__["settings"], "load_settings",
+                            return_value={"NEWS_CHANNEL_ID": "555", "GEMINI_MODEL": "gemini-x"})
+        with load:
+            stranger = interaction(STRANGER)
+            await self.cog.view_settings.callback(self.cog, stranger)
+            stranger.response.send_message.assert_awaited_once()
+            self.assertIn("所有者", stranger.response.send_message.call_args.args[0])
+            stranger.response.defer.assert_not_awaited()
+            stranger.followup.send.assert_not_awaited()
+            owner = interaction(OWNER)
+            await self.cog.view_settings.callback(self.cog, owner)
+            owner.followup.send.assert_awaited_once()
+        self.assertTrue(self.cog.view_settings.default_permissions.administrator)
+
 
 class InboxChannelOwnerOnlyTests(unittest.IsolatedAsyncioTestCase):
     async def test_only_the_owner_sets_the_inbox_channel(self):
