@@ -310,6 +310,31 @@ class GamingTests(unittest.TestCase):
                 self.assertFalse(should_notify_epic(active))
 
 
+class ScheduledLoopTests(unittest.IsolatedAsyncioTestCase):
+    def _cog(self):
+        from cogs.gaming import Gaming
+
+        cog = Gaming.__new__(Gaming)
+        cog._delivery_lock = asyncio.Lock()
+        cog._get_target_channel = MagicMock(return_value=object())
+        return cog
+
+    async def test_loops_survive_a_non_network_error(self):
+        from cogs import gaming as gaming_cog
+
+        thursday = datetime(2026, 11, 19, 11, 30, tzinfo=TZ)
+        fake_datetime = MagicMock()
+        fake_datetime.now.return_value = thursday
+        cog = self._cog()
+        with patch.dict(gaming_cog.Gaming.epic_weekly.coro.__globals__,
+                        {"run_delivery_job": AsyncMock(side_effect=KeyError("shape")),
+                         "datetime": fake_datetime}) as patched:
+            for loop in (cog.epic_weekly, cog.steam_daily):
+                with self.assertLogs("cogs.gaming", level="ERROR"):
+                    await loop.coro(cog)
+            self.assertEqual(patched["run_delivery_job"].await_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
 

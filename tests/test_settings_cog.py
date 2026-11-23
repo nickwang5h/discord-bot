@@ -70,6 +70,15 @@ class GlobalSettingsOwnerOnlyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.set_setting.call_count, len(SETTINGS_WRITES) - 1)
         self.set_secret.assert_called_once_with("GEMINI_API_KEY", "key-value")
 
+    async def test_weather_cities_fit_one_message(self):
+        # Each city is one embed and a Discord message carries at most ten.
+        it = interaction(OWNER)
+        await self.cog.set_weather_cities.callback(self.cog, it, ",".join(f"C{i}" for i in range(11)))
+        self.set_setting.assert_not_called()
+        self.assertIn("10", it.followup.send.call_args.args[0])
+        await self.cog.set_weather_cities.callback(self.cog, interaction(OWNER), ",".join(f"C{i}" for i in range(10)))
+        self.set_setting.assert_called_once_with("WEATHER_CITIES", [f"C{i}" for i in range(10)])
+
     async def test_commands_stay_hidden_from_non_admins(self):
         for name in SETTINGS_WRITES:
             self.assertTrue(getattr(self.cog, name).default_permissions.administrator, name)

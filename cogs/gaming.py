@@ -92,12 +92,15 @@ class Gaming(commands.Cog):
             )
             record_notified_epic(active)
 
-        await run_delivery_job(
-            lock=self._delivery_lock,
-            task_name="Epic 每周喜加一检查",
-            build=build_embed,
-            deliver=deliver_payload,
-        )
+        try:
+            await run_delivery_job(
+                lock=self._delivery_lock,
+                task_name="Epic 每周喜加一检查",
+                build=build_embed,
+                deliver=deliver_payload,
+            )
+        except Exception:
+            logger.exception("Epic 每周喜加一检查执行失败")
 
     @epic_weekly.before_loop
     async def before_epic_weekly(self):
@@ -159,12 +162,15 @@ class Gaming(commands.Cog):
                 record_notified_deal(deal)
             record_new_hits(hits_shown)
 
-        await run_delivery_job(
-            lock=self._delivery_lock,
-            task_name="Steam 愿望单折扣检查",
-            build=check_deals,
-            deliver=deliver_deals,
-        )
+        try:
+            await run_delivery_job(
+                lock=self._delivery_lock,
+                task_name="Steam 愿望单折扣检查",
+                build=check_deals,
+                deliver=deliver_deals,
+            )
+        except Exception:
+            logger.exception("Steam 愿望单折扣检查执行失败")
 
     @steam_daily.before_loop
     async def before_steam_daily(self):

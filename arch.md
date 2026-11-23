@@ -423,7 +423,7 @@ attribution 解析出的 `_provider`、`_model`，写入运行发送意图与投
 3. 解析今日高低温、体感、紫外线、降水概率、降水量、明日预报与基于天气状况的智能出行提醒（烟尘、雷暴、冻雨、大雪等警报）；
 4. 格式化为 Discord Embed，根据严重警报、下雪、降雨、多云、晴朗匹配视觉色彩，并保留数据来源 Footer。
 
-`cogs.weather` 在每日 07:00 (`America/Toronto`) 通过 `core.jobs.run_delivery_job` 发送预设城市（默认 `Ottawa, Sudbury`）的早间天气播报至 `WEATHER_CHANNEL_ID`（未指定时降级至 `NEWS_CHANNEL_ID`）。同时提供 `/weather [city] [days]` 交互式查询命令，及 `set_weather_channel` / `/test_weather` 管理员配置与测试入口。
+`cogs.weather` 在每日 07:00 (`America/Toronto`) 通过 `core.jobs.run_delivery_job` 发送预设城市（默认 `Ottawa, Sudbury`；每城一张 Embed，Discord 单条消息至多 10 张，因此 `/set_weather_cities` 拒绝超过 10 个、已存的更长列表只播报前 10 个）的早间天气播报至 `WEATHER_CHANNEL_ID`（未指定时降级至 `NEWS_CHANNEL_ID`）。同时提供 `/weather [city] [days]` 交互式查询命令，及 `set_weather_channel` / `/test_weather` 管理员配置与测试入口。
 
 多日预报 `core.weather.fetch_forecast_range(city, date_from, date_to, session)` 只走 Open-Meteo
 （geocoding 复用单日备用通道的 `_geocode_open_meteo()`，8 秒超时）：

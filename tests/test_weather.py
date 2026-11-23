@@ -371,5 +371,37 @@ class WeatherCommandDaysTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("找不到城市", embed.description)
 
 
+class WeatherDailyLoopTests(unittest.IsolatedAsyncioTestCase):
+    def _cog(self):
+        from types import SimpleNamespace
+
+        from cogs.weather import Weather
+
+        cog = Weather.__new__(Weather)
+        cog.bot = SimpleNamespace(get_channel=lambda channel_id: object())
+        return cog
+
+    async def test_loop_survives_a_non_network_error(self):
+        from unittest.mock import AsyncMock, patch
+
+        from cogs import weather as weather_cog
+
+        cog = self._cog()
+        cog._run_daily = AsyncMock(side_effect=ValueError("bad embed"))
+        with patch.object(weather_cog.settings, "get_setting", return_value="42"), \
+                self.assertLogs("cogs.weather", level="ERROR"):
+            await cog.weather_daily.coro(cog)
+        cog._run_daily.assert_awaited_once()
+
+    def test_daily_cities_are_capped_at_one_message_of_embeds(self):
+        from unittest.mock import patch
+
+        from cogs import weather as weather_cog
+
+        cities = [f"City{i}" for i in range(15)]
+        with patch.object(weather_cog.settings, "get_setting", return_value=cities):
+            self.assertEqual(self._cog()._get_target_cities(), cities[:10])
+
+
 if __name__ == "__main__":
     unittest.main()

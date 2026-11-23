@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from core import settings, ai_client
+from core.weather import MAX_MORNING_CITIES
 
 class SettingsCog(commands.Cog):
     def __init__(self, bot):
@@ -100,6 +101,12 @@ class SettingsCog(commands.Cog):
         city_list = [c.strip() for c in cities.replace("，", ",").split(",") if c.strip()]
         if not city_list:
             await interaction.followup.send("❌ 城市列表不能为空。", ephemeral=True)
+            return
+        if len(city_list) > MAX_MORNING_CITIES:
+            await interaction.followup.send(
+                f"❌ 最多 {MAX_MORNING_CITIES} 个城市（每个城市一张天气卡片，Discord 单条消息至多 {MAX_MORNING_CITIES} 张）。",
+                ephemeral=True,
+            )
             return
         settings.set_setting("WEATHER_CITIES", city_list)
         formatted = ", ".join(city_list)
