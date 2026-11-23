@@ -37,7 +37,9 @@ ANSWER_ROUTE = "recall.answer"
 PLAN_OUTPUT_TOKENS = 200
 ANSWER_OUTPUT_TOKENS = 1200
 PLAN_TIMEOUT_SECONDS = 45
-ANSWER_TIMEOUT_SECONDS = 90
+# The answer may try Claude and, after a Claude timeout, still needs the whole free chain:
+# 90 + 140 + 10 = 240 s, well inside the 15 minutes a deferred interaction stays valid.
+ANSWER_TIMEOUT_SECONDS = ai_client.PERSONAL_CHAIN_TIMEOUT_SECONDS + ai_client.CALLER_TIMEOUT_MARGIN_SECONDS
 
 MAX_QUESTION_CHARS = 300
 MAX_PLAN_TERMS = 4  # per class
