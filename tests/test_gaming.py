@@ -334,6 +334,26 @@ class ScheduledLoopTests(unittest.IsolatedAsyncioTestCase):
                     await loop.coro(cog)
             self.assertEqual(patched["run_delivery_job"].await_count, 2)
 
+    async def test_loops_survive_a_hand_edited_channel_id(self):
+        from types import SimpleNamespace
+
+        from cogs import gaming as gaming_cog
+        from cogs.gaming import Gaming
+
+        thursday = datetime(2026, 11, 19, 11, 30, tzinfo=TZ)
+        fake_datetime = MagicMock()
+        fake_datetime.now.return_value = thursday
+        cog = Gaming.__new__(Gaming)
+        cog._delivery_lock = asyncio.Lock()
+        cog.bot = SimpleNamespace(get_channel=lambda channel_id: object())
+        with patch.object(gaming_cog.settings, "get_setting", return_value="#games"), \
+                patch.dict(Gaming.epic_weekly.coro.__globals__,
+                           {"run_delivery_job": AsyncMock(), "datetime": fake_datetime}) as patched:
+            for loop in (cog.epic_weekly, cog.steam_daily):
+                with self.assertLogs("cogs.gaming", level="ERROR"):
+                    await loop.coro(cog)
+            patched["run_delivery_job"].assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -94,7 +94,11 @@ class Weather(commands.Cog):
             logger.warning("未配置 WEATHER_CHANNEL_ID 或 NEWS_CHANNEL_ID，跳过每日天气推送")
             return
 
-        channel = self.bot.get_channel(int(channel_id))
+        try:
+            channel = self.bot.get_channel(int(channel_id))
+        except (TypeError, ValueError):
+            logger.error("频道 ID 不是数字，跳过每日天气推送: %r", channel_id)
+            return
         if not channel:
             logger.error("找不到配置的频道 ID: %s", channel_id)
             return

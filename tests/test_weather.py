@@ -402,6 +402,18 @@ class WeatherDailyLoopTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(weather_cog.settings, "get_setting", return_value=cities):
             self.assertEqual(self._cog()._get_target_cities(), cities[:10])
 
+    async def test_loop_survives_a_hand_edited_channel_id(self):
+        from unittest.mock import AsyncMock, patch
+
+        from cogs import weather as weather_cog
+
+        cog = self._cog()
+        cog._run_daily = AsyncMock()
+        with patch.object(weather_cog.settings, "get_setting", return_value="#weather"), \
+                self.assertLogs("cogs.weather", level="ERROR"):
+            await cog.weather_daily.coro(cog)
+        cog._run_daily.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -57,7 +57,11 @@ class Gaming(commands.Cog):
         if not channel_id:
             logger.warning("未配置 GAMING_CHANNEL_ID 或 NEWS_CHANNEL_ID，跳过游戏特惠推送")
             return None
-        channel = self.bot.get_channel(int(channel_id))
+        try:
+            channel = self.bot.get_channel(int(channel_id))
+        except (TypeError, ValueError):
+            logger.error("频道 ID 不是数字，跳过游戏特惠推送: %r", channel_id)
+            return None
         if not channel:
             logger.error("找不到配置的频道 ID: %s", channel_id)
             return None
