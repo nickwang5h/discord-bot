@@ -52,6 +52,13 @@ class Gaming(commands.Cog):
         self.epic_weekly.cancel()
         self.steam_daily.cancel()
 
+    # The watchlist is global while the bot also serves shared servers: only the owner edits it.
+    async def _owner_only(self, interaction):
+        if await self.bot.is_owner(discord.Object(id=interaction.user.id)):
+            return True
+        await interaction.response.send_message("监控愿望单只对机器人所有者开放。", ephemeral=True)
+        return False
+
     def _get_target_channel(self) -> discord.abc.Messageable | None:
         channel_id = settings.get_setting("GAMING_CHANNEL_ID") or settings.get_setting("NEWS_CHANNEL_ID")
         if not channel_id:
@@ -223,7 +230,7 @@ class Gaming(commands.Cog):
         try:
             items = get_watchlist()
             if not items:
-                await interaction.followup.send("当前愿望单为空，管理员可使用 `/watch_game` 添加监控。")
+                await interaction.followup.send("当前愿望单为空，机器人所有者可使用 `/watch_game` 添加监控。")
                 return
 
             embed = discord.Embed(
@@ -251,16 +258,18 @@ class Gaming(commands.Cog):
                     embed.add_field(name=f"《{title}》", value=value_str, inline=False)
                     await asyncio.sleep(0.2)
 
-            embed.set_footer(text="提示: 管理员可通过 /watch_game 与 /unwatch_game 增删监控")
+            embed.set_footer(text="提示: 机器人所有者可通过 /watch_game 与 /unwatch_game 增删监控")
             await interaction.followup.send(embed=embed)
         except Exception as error:
             logger.exception("获取愿望单失败: %s", error)
             await interaction.followup.send(f"❌ 获取愿望单失败: {error}")
 
-    @app_commands.command(name="watch_game", description="[管理员] 添加指定游戏到折扣监控愿望单")
+    @app_commands.command(name="watch_game", description="[管理员] 添加指定游戏到折扣监控愿望单（仅所有者）")
     @app_commands.describe(game="游戏英文或标准名称，例如 Hades II, Monster Hunter")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def watch_game(self, interaction: discord.Interaction, game: str):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         try:
             async with aiohttp.ClientSession() as session:
@@ -291,10 +300,12 @@ class Gaming(commands.Cog):
             logger.exception("添加监控游戏失败: %s", error)
             await interaction.followup.send(f"❌ 添加失败: {error}", ephemeral=True)
 
-    @app_commands.command(name="unwatch_game", description="[管理员] 从折扣监控愿望单移除指定游戏")
+    @app_commands.command(name="unwatch_game", description="[管理员] 从折扣监控愿望单移除指定游戏（仅所有者）")
     @app_commands.describe(game="愿望单中的游戏名称或 GameID")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(administrator=True)
     async def unwatch_game(self, interaction: discord.Interaction, game: str):
+        if not await self._owner_only(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         try:
             removed = remove_from_watchlist(game)

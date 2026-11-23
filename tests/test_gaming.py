@@ -355,6 +355,61 @@ class ScheduledLoopTests(unittest.IsolatedAsyncioTestCase):
             patched["run_delivery_job"].assert_not_awaited()
 
 
+
+class WatchlistOwnerOnlyTests(unittest.IsolatedAsyncioTestCase):
+    """The watchlist is global while the bot also serves shared servers: only the owner edits it."""
+
+    OWNER, STRANGER = 1, 2
+
+    def setUp(self):
+        from types import SimpleNamespace
+
+        from cogs import gaming as gaming_cog
+        from cogs.gaming import Gaming
+
+        bot = MagicMock()
+        bot.is_owner = AsyncMock(side_effect=lambda user: user.id == self.OWNER)
+        self.cog = Gaming.__new__(Gaming)
+        self.cog.bot = bot
+        self.SimpleNamespace = SimpleNamespace
+        patches = [
+            patch.object(gaming_cog, "add_to_watchlist", return_value=True),
+            patch.object(gaming_cog, "remove_from_watchlist", return_value=True),
+            patch.object(gaming_cog, "search_cheapshark_games",
+                         AsyncMock(return_value=[{"external": "Hades II", "gameID": "9"}])),
+        ]
+        self.add, self.remove, _ = [p.start() for p in patches]
+        for p in patches:
+            self.addCleanup(p.stop)
+
+    def _interaction(self, user):
+        ns = self.SimpleNamespace
+        return ns(user=ns(id=user), guild_id=77,
+                  response=ns(send_message=AsyncMock(), defer=AsyncMock()),
+                  followup=ns(send=AsyncMock()))
+
+    async def test_other_server_admins_are_refused_without_writing(self):
+        for command in (self.cog.watch_game, self.cog.unwatch_game):
+            it = self._interaction(self.STRANGER)
+            await command.callback(self.cog, it, "Hades II")
+            it.response.send_message.assert_awaited_once()
+            self.assertTrue(it.response.send_message.call_args.kwargs["ephemeral"])
+            self.assertIn("所有者", it.response.send_message.call_args.args[0])
+            it.response.defer.assert_not_awaited()
+        self.add.assert_not_called()
+        self.remove.assert_not_called()
+
+    async def test_owner_still_edits_the_watchlist(self):
+        await self.cog.watch_game.callback(self.cog, self._interaction(self.OWNER), "Hades II")
+        await self.cog.unwatch_game.callback(self.cog, self._interaction(self.OWNER), "Hades II")
+        self.add.assert_called_once()
+        self.remove.assert_called_once_with("Hades II")
+
+    def test_commands_stay_hidden_from_non_admins(self):
+        for command in (self.cog.watch_game, self.cog.unwatch_game):
+            self.assertTrue(command.default_permissions.administrator)
+
+
 if __name__ == "__main__":
     unittest.main()
 
