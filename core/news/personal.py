@@ -162,7 +162,8 @@ def load(reserved_names=()):
 def feed_source(entry):
     """Resolve an entry to a fetchable feed, or None when its runtime switch is absent."""
     if 'url' in entry:
-        return FeedSource(entry['category'], entry['url'], entry['name'])
+        return FeedSource(entry['category'], entry['url'], entry['name'],
+                          follow_redirects=False, public_host_only=True)
     base, path = _rsshub_base(), entry['rsshub']
     if base is None:
         return None
@@ -171,7 +172,8 @@ def feed_source(entry):
         if not uid or not uid.isdecimal():
             return None
         path = path.replace('{uid}', uid)
-    return FeedSource(entry['category'], f"{base}{path}?key={get_env('RSSHUB_ACCESS_KEY')}", entry['name'])
+    return FeedSource(entry['category'], f"{base}{path}?key={get_env('RSSHUB_ACCESS_KEY')}", entry['name'],
+                      follow_redirects=False)
 
 
 def entry_from_input(name, address, category):

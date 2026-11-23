@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import aiohttp
 import feedparser
 
-from core.web_fetcher import read_capped
+from core.web_fetcher import _validate_public_url, read_capped
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,10 @@ class FeedSource:
     category: str
     url: str
     name: str = ""
+    # Personal sources are fetched the way /source_add probed them: no redirects, and an
+    # owner-typed address must resolve to a public host (RSSHub is the deployment's own).
+    follow_redirects: bool = True
+    public_host_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +97,11 @@ async def fetch_feed(
         )
 
     try:
-        async with session.get(source.url) as response:
+        if source.public_host_only:
+            await _validate_public_url(source.url)
+        async with session.get(source.url, allow_redirects=source.follow_redirects) as response:
+            if not source.follow_redirects and 300 <= response.status < 400:
+                raise RuntimeError(f"HTTP {response.status}：个人信源不跟随重定向")
             response.raise_for_status()
             content = await read_capped(response, MAX_FEED_BYTES)
             if len(content) > MAX_FEED_BYTES:

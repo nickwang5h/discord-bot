@@ -128,6 +128,66 @@ class ProbeTests(PersonalStoreCase):
         self.assertFalse(session.get.call_args.kwargs['allow_redirects'])
 
 
+
+class RegularFetchTests(unittest.IsolatedAsyncioTestCase):
+    """Hourly collection of a personal source keeps the probe's rules: no redirects, public host."""
+
+    RSS = (b"<?xml version='1.0'?><rss version='2.0'><channel><title>T</title>"
+           b"<item><title>One</title><link>https://example.com/1</link></item></channel></rss>")
+
+    async def asyncSetUp(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        async def feed(_request):
+            return web.Response(body=self.RSS, content_type='application/rss+xml')
+
+        async def moved(_request):
+            raise web.HTTPFound('/rss')
+
+        app = web.Application()
+        app.router.add_get('/rss', feed)
+        app.router.add_get('/old', moved)
+        self.server = TestServer(app, host='127.0.0.1')
+        await self.server.start_server()
+        self.addAsyncCleanup(self.server.close)
+
+    def url(self, path):
+        return str(self.server.make_url(path))
+
+    async def fetch(self, source):
+        from core.feeds import fetch_feed
+        return await fetch_feed(source, max_age_seconds=None)
+
+    async def test_personal_url_source_does_not_follow_redirects(self):
+        from core import feeds
+        source = personal.feed_source({'name': 'T', 'category': 'General', 'url': self.url('/old')})
+        with patch.object(feeds, '_validate_public_url', AsyncMock()):
+            with self.assertRaisesRegex(RuntimeError, '302'):
+                await self.fetch(source)
+            self.assertEqual(len(await self.fetch(
+                personal.feed_source({'name': 'T', 'category': 'General', 'url': self.url('/rss')}))), 1)
+
+    async def test_personal_url_source_must_resolve_to_a_public_host(self):
+        from core.web_fetcher import UnsafeUrlError
+        source = personal.feed_source({'name': 'T', 'category': 'General', 'url': self.url('/rss')})
+        with self.assertRaises(UnsafeUrlError):
+            await self.fetch(source)
+
+    async def test_rsshub_source_skips_the_host_check_but_not_the_redirect_rule(self):
+        env = {**ENV, 'RSSHUB_URL': self.url('')}
+        with patch.object(personal, 'get_env', env.get):
+            ok = personal.feed_source({'name': 'H', 'category': 'AI-Tech', 'rsshub': '/rss'})
+            moved = personal.feed_source({'name': 'H', 'category': 'AI-Tech', 'rsshub': '/old'})
+        self.assertEqual(len(await self.fetch(ok)), 1)
+        with self.assertRaisesRegex(RuntimeError, '302'):
+            await self.fetch(moved)
+
+    async def test_shared_sources_still_follow_redirects(self):
+        from core.feeds import FeedSource
+        self.assertEqual(len(await self.fetch(FeedSource('World', self.url('/old'), 'Shared'))), 1)
+
+
 def _article(source, url, title, age=60):
     now = time.time()
     return Article(f'{source}{url}', source, url, title, f'{title} body', 'General',

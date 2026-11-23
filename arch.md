@@ -292,7 +292,8 @@ Texas、Ontario；Georgia 与国名同形不算，两字母邮政缩写不算）
 General）分类；RSSHub 条目只存路由，访问密钥在采集时由运行环境拼接，不落盘。
 订阅解析拒绝把个人组放进共享专题或投递到 `INBOX_CHANNEL_ID` 以外。所有者通过
 `/source_list`、`/source_add`、`/source_remove`（`cogs/news.py`）经 `JsonStore` 原子
-更新清单；新增前校验主机（https 公网或 RSSHub 路由）并不跟随跳转试取一次。
+更新清单；新增前校验主机（https 公网或 RSSHub 路由）并不跟随跳转试取一次。每小时的常规采集沿用同样约束：
+个人信源不跟随跳转（3xx 记为该源失败），`url` 条目每次请求前再做公网 DNS 校验；共享信源仍跟随跳转。
 `following` 专题在候选阶段按 URL 和归一化标题去掉转发重复及已投递内容。
 
 个人专题（`topic.personal`，目前只有 `following`）在共享流水线里多三处分支，共享专题的
