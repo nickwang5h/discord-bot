@@ -27,6 +27,20 @@ class CanadaLifeTests(unittest.TestCase):
         # Labour day 2026 is Sep 7
         self.assertEqual(date_map["劳动节 (Labour Day)"], datetime.date(2026, 9, 7))
 
+    def test_victoria_day_is_the_monday_before_may_25(self):
+        # May 25 itself is a Monday in 2026, 2037 and 2043; the holiday is the week before.
+        expected = {
+            2025: datetime.date(2025, 5, 19),
+            2026: datetime.date(2026, 5, 18),
+            2027: datetime.date(2027, 5, 24),
+            2028: datetime.date(2028, 5, 22),
+            2037: datetime.date(2037, 5, 18),
+            2043: datetime.date(2043, 5, 18),
+        }
+        for year, day in expected.items():
+            date_map = {name: d for d, name, _ in get_canada_holidays(year)}
+            self.assertEqual(date_map["维多利亚日 (Victoria Day)"], day, year)
+
 
 if __name__ == "__main__":
     unittest.main()

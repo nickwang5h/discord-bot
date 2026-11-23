@@ -40,8 +40,8 @@ def _get_nth_weekday_of_month(year: int, month: int, nth: int, weekday: int) -> 
 
 
 def _get_monday_before(year: int, month: int, day: int) -> datetime.date:
-    """计算指定日期之前的最近一个周一 (例如 Victoria Day 为 5 月 25 日前的周一)."""
-    d = datetime.date(year, month, day)
+    """计算指定日期之前的最近一个周一，不含该日本身 (例如 Victoria Day 为 5 月 25 日前的周一)."""
+    d = datetime.date(year, month, day) - datetime.timedelta(days=1)
     while d.weekday() != 0:
         d -= datetime.timedelta(days=1)
     return d
